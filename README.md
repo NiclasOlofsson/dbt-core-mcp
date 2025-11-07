@@ -106,7 +106,6 @@ Or with `pipx`:
 
 🚧 **Planned:**
 - View model lineage graph
-- Seed and snapshot commands
 - Custom dbt commands with streaming output
 
 ## Available Tools
@@ -232,6 +231,62 @@ Run models and tests together in dependency order (most efficient approach):
 ```python
 build_models(modified_downstream=True)
 ```
+
+### `seed_data`
+Load seed data (CSV files) from `seeds/` directory into database tables.
+
+Seeds are typically used for reference data like country codes, product categories, etc.
+
+**Smart selection modes:**
+- `modified_only`: Load only seeds that changed
+- `modified_downstream`: Load changed seeds + downstream dependencies
+
+**Other parameters:**
+- `select`: Seed selector (e.g., "raw_customers", "tag:lookup")
+- `exclude`: Exclude seeds
+- `full_refresh`: Truncate and reload seed tables
+- `show`: Show preview of loaded data
+
+**Examples:**
+```python
+# Load all seeds
+seed_data()
+
+# Load only changed CSVs (fast!)
+seed_data(modified_only=True)
+
+# Load specific seed
+seed_data(select="raw_customers")
+```
+
+**Important:** Change detection works via file hash:
+- Seeds < 1 MiB: Content changes detected ✅
+- Seeds ≥ 1 MiB: Only file path changes detected ⚠️
+
+For large seeds, use manual selection or run all seeds.
+
+### `snapshot_models`
+Execute dbt snapshots to capture slowly changing dimensions (SCD Type 2).
+
+Snapshots track historical changes by recording when records were first seen, when they changed, and their state at each point in time.
+
+**Parameters:**
+- `select`: Snapshot selector (e.g., "customer_history", "tag:daily")
+- `exclude`: Exclude snapshots
+
+**Examples:**
+```python
+# Run all snapshots
+snapshot_models()
+
+# Run specific snapshot
+snapshot_models(select="customer_history")
+
+# Run snapshots tagged 'hourly'
+snapshot_models(select="tag:hourly")
+```
+
+**Note:** Snapshots are time-based and should be run on a schedule (e.g., daily/hourly), not during interactive development. They do not support smart selection.
 
 ## Developer Workflow
 

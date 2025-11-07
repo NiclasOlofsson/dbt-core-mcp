@@ -1031,6 +1031,174 @@ class DBTCoreMCPServer:
                 "elapsed_time": run_results.get("elapsed_time"),
             }
 
+        @self.app.tool()
+        def seed_data(
+            select: str | None = None,
+            exclude: str | None = None,
+            modified_only: bool = False,
+            modified_downstream: bool = False,
+            full_refresh: bool = False,
+            show: bool = False,
+        ) -> dict[str, object]:
+            """Load seed data (CSV files) from seeds/ directory into database tables.
+
+            Seeds are typically used for reference data like country codes, product categories, etc.
+
+            Smart selection modes detect changed CSV files:
+            - modified_only: Load only seeds that changed since last successful run
+            - modified_downstream: Load changed seeds + all downstream dependencies
+
+            Manual selection (if not using smart modes):
+            - select: DBT selector syntax (e.g., "raw_customers", "tag:lookup")
+            - exclude: Exclude specific seeds
+
+            Important: Change detection for seeds works via file hash comparison:
+            - Seeds < 1 MiB: Content hash is compared (recommended)
+            - Seeds >= 1 MiB: Only file path changes are detected (content changes ignored)
+            For large seeds, use manual selection or run all seeds.
+
+            Args:
+                select: Manual selector for seeds
+                exclude: Exclude selector
+                modified_only: Only load seeds modified since last successful run
+                modified_downstream: Load modified seeds + downstream dependencies
+                full_refresh: Truncate and reload seed tables (default behavior)
+                show: Show preview of loaded data
+
+            Returns:
+                Seed results with status and loaded seed info
+
+            Examples:
+                seed_data()  # Load all seeds
+                seed_data(modified_only=True)  # Load only changed CSVs
+                seed_data(select="raw_customers")  # Load specific seed
+            """
+            self._ensure_initialized()
+
+            # Validate: can't use both smart and manual selection
+            if (modified_only or modified_downstream) and select:
+                raise ValueError("Cannot use both modified_* flags and select parameter")
+
+            # Build command args
+            args = ["seed"]
+
+            # Handle smart selection
+            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+
+            if modified_only or modified_downstream:
+                if not state_dir.exists():
+                    return {
+                        "status": "error",
+                        "message": "No previous seed state found. Run without modified_* flags first to establish baseline.",
+                    }
+
+                selector = "state:modified+" if modified_downstream else "state:modified"
+                args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+            # Manual selection
+            elif select:
+                args.extend(["-s", select])
+
+            if exclude:
+                args.extend(["--exclude", exclude])
+
+            if full_refresh:
+                args.append("--full-refresh")
+
+            if show:
+                args.append("--show")
+
+            # Execute
+            logger.info(f"Running DBT seed with args: {args}")
+            result = self.runner.invoke(args)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Seed failed"
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "command": " ".join(args),
+                }
+
+            # Save state on success for next modified run
+            if result.success and self.project_dir:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                manifest_path = self.runner.get_manifest_path()  # type: ignore
+                shutil.copy(manifest_path, state_dir / "manifest.json")
+
+            # Parse run_results.json for details
+            run_results = self._parse_run_results()
+
+            return {
+                "status": "success",
+                "command": " ".join(args),
+                "results": run_results.get("results", []),
+                "elapsed_time": run_results.get("elapsed_time"),
+            }
+
+        @self.app.tool()
+        def snapshot_models(
+            select: str | None = None,
+            exclude: str | None = None,
+        ) -> dict[str, object]:
+            """Execute DBT snapshots to capture slowly changing dimensions (SCD Type 2).
+
+            Snapshots track historical changes over time by recording:
+            - When records were first seen (valid_from)
+            - When records changed or were deleted (valid_to)
+            - The state of records at each point in time
+
+            Unlike models and seeds, snapshots are time-based and should be run on a schedule
+            (e.g., daily or hourly), not during interactive development.
+
+            Args:
+                select: DBT selector syntax (e.g., "snapshot_name", "tag:daily")
+                exclude: Exclude specific snapshots
+
+            Returns:
+                Snapshot results with status and captured changes
+
+            Examples:
+                snapshot_models()  # Run all snapshots
+                snapshot_models(select="customer_history")  # Run specific snapshot
+                snapshot_models(select="tag:hourly")  # Run snapshots tagged 'hourly'
+
+            Note: Snapshots do not support smart selection (modified_only/modified_downstream)
+            because they are time-dependent, not change-dependent.
+            """
+            self._ensure_initialized()
+
+            # Build command args
+            args = ["snapshot"]
+
+            if select:
+                args.extend(["-s", select])
+
+            if exclude:
+                args.extend(["--exclude", exclude])
+
+            # Execute
+            logger.info(f"Running DBT snapshot with args: {args}")
+            result = self.runner.invoke(args)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Snapshot failed"
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "command": " ".join(args),
+                }
+
+            # Parse run_results.json for details
+            run_results = self._parse_run_results()
+
+            return {
+                "status": "success",
+                "command": " ".join(args),
+                "results": run_results.get("results", []),
+                "elapsed_time": run_results.get("elapsed_time"),
+            }
+
         logger.info("Registered DBT tools")
 
     def run(self) -> None:
