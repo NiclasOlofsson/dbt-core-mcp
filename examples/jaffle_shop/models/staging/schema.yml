@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: jaffle_shop
+    description: Raw data from the jaffle shop
+    tables:
+      - name: customers
+        description: Raw customer data
+        columns:
+          - name: id
+            description: Primary key for customers
+          - name: first_name
+            description: Customer's first name
+          - name: last_name
+            description: Customer's last name
+
+      - name: orders
+        description: Raw order data
+        columns:
+          - name: id
+            description: Primary key for orders
+          - name: user_id
+            description: Foreign key to customers
+          - name: order_date
+            description: Date the order was placed
+          - name: status
+            description: Order status (completed, shipped, etc)

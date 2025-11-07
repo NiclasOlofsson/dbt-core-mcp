@@ -115,18 +115,67 @@ Or with `pipx`:
 }
 ```
 
-## Features (Planned)
+## Requirements
 
-- [ ] List DBT models
-- [ ] Get model information and metadata
-- [ ] View compiled SQL
-- [ ] Run specific models
-- [ ] Test models
-- [ ] List sources
-- [ ] View model lineage
-- [ ] Access DBT documentation
-- [ ] Query manifest.json
-- [ ] Execute DBT commands
+- **DBT Core**: Version 1.9.0 or higher
+- **Python**: 3.9 or higher
+- **Supported Adapters**: Any DBT adapter (dbt-duckdb, dbt-postgres, dbt-snowflake, etc.)
+
+## Limitations
+
+- **Python models**: Not currently supported. Only SQL-based DBT models are supported at this time.
+- **DBT Version**: Requires dbt-core 1.9.0 or higher
+
+## Features
+
+✅ **Implemented:**
+- Get DBT project information (version, adapter, counts)
+- List all models with metadata
+- List all sources
+- Automatic environment detection (uv, poetry, pipenv, venv, conda)
+- Bridge runner for executing DBT in user's environment
+
+🚧 **Planned:**
+- Get model information and metadata (enhanced)
+- View compiled SQL
+- Run specific models
+- Test models
+- View model lineage
+- Access DBT documentation
+- Execute custom DBT commands
+
+## Available Tools
+
+### `get_project_info`
+Returns metadata about the DBT project including:
+- Project name
+- DBT version
+- Adapter type (e.g., duckdb, postgres, snowflake)
+- Model and source counts
+
+### `list_models`
+Lists all models in the project with:
+- Name and unique ID
+- Schema and database
+- Materialization type (table, view, incremental, etc.)
+- Tags
+- Dependencies
+- File path
+
+### `list_sources`
+Lists all sources in the project with:
+- Source and table names
+- Schema and database
+- Description and tags
+
+## How It Works
+
+This server uses a "bridge runner" approach to execute DBT in your project's Python environment:
+
+1. **Environment Detection**: Automatically detects your Python environment (uv, poetry, pipenv, venv, conda)
+2. **Subprocess Bridge**: Executes DBT commands using inline Python scripts in your environment
+3. **Manifest Parsing**: Reads `target/manifest.json` for model and source metadata
+4. **No Version Conflicts**: Uses your exact dbt-core version and adapter without conflicts
 
 ## Contributing
 

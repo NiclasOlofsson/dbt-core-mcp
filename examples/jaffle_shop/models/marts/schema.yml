@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: customers
+    description: Final customer dimension with order metrics
+    columns:
+      - name: customer_id
+        description: Primary key for customers
+        tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: Customer's first name
+      - name: last_name
+        description: Customer's last name
+      - name: first_order_date
+        description: Date of the customer's first order
+      - name: most_recent_order_date
+        description: Date of the customer's most recent order
+      - name: number_of_orders
+        description: Total number of orders placed by this customer
+        tests:
+          - not_null
