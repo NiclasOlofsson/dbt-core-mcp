@@ -2,6 +2,10 @@
 
 An MCP (Model Context Protocol) server for interacting with DBT (Data Build Tool) projects.
 
+<a href="https://glama.ai/mcp/servers/@NiclasOlofsson/dbt-core-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@NiclasOlofsson/dbt-core-mcp/badge" alt="DBT Core Server MCP server" />
+</a>
+
 ## Overview
 
 This server provides tools to interact with DBT projects via the Model Context Protocol, enabling AI assistants to:
