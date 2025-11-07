@@ -26,7 +26,24 @@ jaffle_shop/
 
 ## Testing with MCP Server
 
-Point the MCP server to this project:
+### Option 1: Auto-detection (recommended)
+
+Open the jaffle_shop folder as your workspace and the server will auto-detect the project:
+
+```json
+{
+  "servers": {
+    "dbt-core": {
+      "command": "uv",
+      "args": ["run", "dbt-core-mcp"]
+    }
+  }
+}
+```
+
+### Option 2: Explicit project directory
+
+For testing from a different directory, specify the project path explicitly:
 
 ```bash
 uv run dbt-core-mcp --project-dir examples/jaffle_shop

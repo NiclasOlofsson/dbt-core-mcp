@@ -17,11 +17,11 @@ This MCP server is designed to run within VS Code via the Model Context Protocol
 
 ### Configuration for VS Code
 
-Add to your VS Code MCP settings:
+Add to your `.vscode/mcp.json` file in your dbt project workspace:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "dbt-core": {
       "command": "uvx",
       "args": ["dbt-core-mcp"]
@@ -34,7 +34,7 @@ Or if you prefer `pipx`:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "dbt-core": {
       "command": "pipx",
       "args": ["run", "dbt-core-mcp"]
@@ -43,13 +43,15 @@ Or if you prefer `pipx`:
 }
 ```
 
+The server will automatically use your workspace directory as the dbt project location.
+
 ### For the impatient (bleeding edge from GitHub)
 
 If you want to always run the latest code directly from GitHub:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "dbt-core": {
       "command": "uvx",
       "args": [
@@ -66,7 +68,7 @@ Or with `pipx`:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "dbt-core": {
       "command": "pipx",
       "args": [

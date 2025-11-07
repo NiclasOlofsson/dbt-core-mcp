@@ -64,7 +64,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--project-dir",
         type=str,
-        help="Optional: Path to DBT project directory for testing (overrides MCP workspace roots)",
+        help="Optional: Path to DBT project directory (auto-detects from workspace if not provided)",
     )
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -80,6 +80,8 @@ def main() -> None:
     from . import __version__
 
     logging.info(f"Running version {__version__}")
+
+    # Pass project_dir if specified, otherwise let server auto-detect from workspace roots
     server = create_server(project_dir=args.project_dir)
 
     try:

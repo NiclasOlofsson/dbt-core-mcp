@@ -8,7 +8,11 @@
         "--project-dir",
         "examples/jaffle_shop"
       ],
-      "cwd": "."
+      "cwd": ".",
+      "env": {
+        // AI: Increment this value (1, 2, 3, etc.) to force VS Code to restart the MCP server for testing
+        "_RESTART": "2"
+      }
     }
   }
 }

@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import yaml
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
 
@@ -34,10 +35,8 @@ class DBTCoreMCPServer:
         """Initialize the server.
 
         Args:
-            project_dir: Optional path to DBT project directory for testing.
-                         If not provided, uses MCP workspace roots.
-
-        DBT project directories will be detected from MCP workspace roots during initialization.
+            project_dir: Optional path to DBT project directory. If not provided,
+                        automatically detects from MCP workspace roots or falls back to cwd.
         """
         # FastMCP initialization with recommended arguments
         from . import __version__
@@ -64,9 +63,9 @@ class DBTCoreMCPServer:
             include_fastmcp_meta=True,  # Include FastMCP metadata for clients
         )
 
-        # DBT project directories will be set from workspace roots during MCP initialization
-        # or from the optional project_dir argument for testing
-        self.project_dir = Path(project_dir) if project_dir else None
+        # Store the explicit project_dir if provided, otherwise will detect from workspace roots
+        self._explicit_project_dir = Path(project_dir) if project_dir else None
+        self.project_dir: Path | None = None
         self.profiles_dir = os.path.expanduser("~/.dbt")
 
         # Initialize DBT components (lazy-loaded)
@@ -85,12 +84,53 @@ class DBTCoreMCPServer:
         self._register_tools()
 
         logger.info("DBT Core MCP Server initialized")
-        if self.project_dir:
-            logger.info(f"Project directory: {self.project_dir}")
-            logger.info(f"Adapter type: {self.adapter_type}")
-        else:
-            logger.info("Project directory will be set from MCP workspace roots")
         logger.info(f"Profiles directory: {self.profiles_dir}")
+
+    def _detect_project_dir(self) -> Path:
+        """Detect the DBT project directory.
+
+        Resolution order:
+        1. Use explicit project_dir if provided during initialization
+        2. Fall back to current working directory
+
+        Note: Workspace roots detection happens in _detect_workspace_roots()
+        which is called asynchronously from tool contexts.
+
+        Returns:
+            Path to the DBT project directory
+        """
+        # Use explicit project_dir if provided
+        if self._explicit_project_dir:
+            logger.debug(f"Using explicit project directory: {self._explicit_project_dir}")
+            return self._explicit_project_dir
+
+        # Fall back to current working directory
+        cwd = Path.cwd()
+        logger.info(f"Using current working directory: {cwd}")
+        return cwd
+
+    async def _detect_workspace_roots(self, ctx: Any) -> Path | None:
+        """Attempt to detect workspace roots from MCP context.
+
+        Args:
+            ctx: FastMCP Context object
+
+        Returns:
+            Path to first workspace root, or None if unavailable
+        """
+        try:
+            if isinstance(ctx, Context):
+                roots = await ctx.list_roots()
+                if roots:
+                    uri_str = roots[0].uri.path if hasattr(roots[0].uri, "path") else str(roots[0].uri)
+                    if uri_str:  # Ensure we have a valid string
+                        workspace_root = Path(uri_str)
+                        logger.info(f"Detected workspace root from MCP client: {workspace_root}")
+                        return workspace_root
+        except Exception as e:
+            logger.debug(f"Could not access workspace roots: {e}")
+
+        return None
 
     def _get_project_paths(self) -> dict[str, list[str]]:
         """Read configured paths from dbt_project.yml.
@@ -211,8 +251,40 @@ class DBTCoreMCPServer:
         logger.info("DBT components initialized successfully")
 
     def _ensure_initialized(self) -> None:
-        """Ensure DBT components are initialized before use."""
+        """Ensure DBT components are initialized before use.
+
+        On first call, detects project directory from explicit path or cwd.
+        If no explicit path was provided and workspace root detection is needed,
+        tools should call _ensure_initialized_with_context() instead.
+        """
         if not self._initialized:
+            # Detect project directory on first use
+            if not self.project_dir:
+                self.project_dir = self._detect_project_dir()
+                logger.info(f"DBT project directory: {self.project_dir}")
+
+            if not self.project_dir:
+                raise RuntimeError("DBT project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
+            self._initialize_dbt_components()
+
+    async def _ensure_initialized_with_context(self, ctx: Any) -> None:
+        """Ensure DBT components are initialized, with optional workspace root detection.
+
+        Args:
+            ctx: FastMCP Context for accessing workspace roots
+        """
+        if not self._initialized:
+            # Try to detect from workspace roots if no explicit path
+            if not self.project_dir and not self._explicit_project_dir:
+                workspace_root = await self._detect_workspace_roots(ctx)
+                if workspace_root:
+                    self.project_dir = workspace_root
+
+            # Fall back to basic detection if needed
+            if not self.project_dir:
+                self.project_dir = self._detect_project_dir()
+                logger.info(f"DBT project directory: {self.project_dir}")
+
             if not self.project_dir:
                 raise RuntimeError("DBT project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
             self._initialize_dbt_components()
@@ -392,13 +464,13 @@ class DBTCoreMCPServer:
         """Register all DBT tools."""
 
         @self.app.tool()
-        def get_project_info() -> dict[str, object]:
+        async def get_project_info(ctx: Context) -> dict[str, object]:
             """Get information about the DBT project.
 
             Returns:
                 Dictionary with project information
             """
-            self._ensure_initialized()
+            await self._ensure_initialized_with_context(ctx)
 
             # Get project info from manifest
             info = self.manifest.get_project_info()  # type: ignore
@@ -1522,8 +1594,9 @@ def create_server(project_dir: Optional[str] = None) -> DBTCoreMCPServer:
     """Create a new DBT Core MCP server instance.
 
     Args:
-        project_dir: Optional path to DBT project directory for testing.
-                     If not provided, uses MCP workspace roots.
+        project_dir: Optional path to DBT project directory.
+                     If not provided, automatically detects from MCP workspace roots
+                     or falls back to current working directory.
 
     Returns:
         DBTCoreMCPServer instance
