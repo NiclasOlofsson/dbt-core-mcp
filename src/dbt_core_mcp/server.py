@@ -4,10 +4,12 @@ DBT Core MCP Server Implementation.
 This server provides tools for interacting with DBT projects via the Model Context Protocol.
 """
 
+import json
 import logging
 import os
+import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from fastmcp import FastMCP
@@ -215,6 +217,177 @@ class DBTCoreMCPServer:
                 raise RuntimeError("DBT project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
             self._initialize_dbt_components()
 
+    def _parse_run_results(self) -> dict[str, object]:
+        """Parse target/run_results.json after dbt run/test/build.
+
+        Returns:
+            Dictionary with results array and metadata
+        """
+        if not self.project_dir:
+            return {"results": [], "elapsed_time": 0}
+
+        run_results_path = self.project_dir / "target" / "run_results.json"
+        if not run_results_path.exists():
+            return {"results": [], "elapsed_time": 0}
+
+        try:
+            with open(run_results_path) as f:
+                data = json.load(f)
+
+            # Simplify results for output
+            simplified_results = []
+            for result in data.get("results", []):
+                simplified_results.append(
+                    {
+                        "unique_id": result.get("unique_id"),
+                        "status": result.get("status"),
+                        "message": result.get("message"),
+                        "execution_time": result.get("execution_time"),
+                        "failures": result.get("failures"),
+                    }
+                )
+
+            return {
+                "results": simplified_results,
+                "elapsed_time": data.get("elapsed_time", 0),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to parse run_results.json: {e}")
+            return {"results": [], "elapsed_time": 0}
+
+    def _compare_model_schemas(self, model_unique_ids: list[str], state_manifest_path: Path) -> dict[str, Any]:
+        """Compare schemas of models before and after run.
+
+        Args:
+            model_unique_ids: List of model unique IDs that were run
+            state_manifest_path: Path to the saved state manifest.json
+
+        Returns:
+            Dictionary with schema changes per model
+        """
+        if not state_manifest_path.exists():
+            return {}
+
+        try:
+            # Load state (before) manifest
+            with open(state_manifest_path) as f:
+                state_manifest = json.load(f)
+
+            # Load current (after) manifest
+            if not self.manifest:
+                return {}
+
+            current_manifest_data = self.manifest.get_manifest_dict()  # type: ignore
+
+            schema_changes: dict[str, dict[str, object]] = {}
+
+            for unique_id in model_unique_ids:
+                # Skip non-model nodes (like tests)
+                if not unique_id.startswith("model."):
+                    continue
+
+                # Get before and after column definitions
+                before_node = state_manifest.get("nodes", {}).get(unique_id, {})
+                after_node = current_manifest_data.get("nodes", {}).get(unique_id, {})
+
+                before_columns = before_node.get("columns", {})
+                after_columns = after_node.get("columns", {})
+
+                # Skip if no column definitions exist (not in schema.yml)
+                if not before_columns and not after_columns:
+                    continue
+
+                # Compare columns
+                before_names = set(before_columns.keys())
+                after_names = set(after_columns.keys())
+
+                added = sorted(after_names - before_names)
+                removed = sorted(before_names - after_names)
+
+                # Check for type changes in common columns
+                changed_types = {}
+                for col in before_names & after_names:
+                    before_type = before_columns[col].get("data_type")
+                    after_type = after_columns[col].get("data_type")
+                    if before_type != after_type and before_type is not None and after_type is not None:
+                        changed_types[col] = {"from": before_type, "to": after_type}
+
+                # Only record if there are actual changes
+                if added or removed or changed_types:
+                    model_name = after_node.get("name", unique_id.split(".")[-1])
+                    schema_changes[model_name] = {
+                        "changed": True,
+                        "added_columns": added,
+                        "removed_columns": removed,
+                        "changed_types": changed_types,
+                    }
+
+            return schema_changes
+
+        except Exception as e:
+            logger.warning(f"Failed to compare schemas: {e}")
+            return {}
+
+    def _get_table_schema_from_db(self, model_name: str) -> list[dict[str, object]]:
+        """Get full table schema from database using DESCRIBE.
+
+        Args:
+            model_name: Name of the model
+
+        Returns:
+            List of column dictionaries with details (column_name, column_type, null, etc.)
+            Empty list if query fails or table doesn't exist
+        """
+        try:
+            sql = f"DESCRIBE {{{{ ref('{model_name}') }}}}"
+            result = self.runner.invoke_query(sql, limit=None)  # type: ignore
+
+            if not result.success or not result.stdout:
+                return []
+
+            # Parse JSON output using robust regex + JSONDecoder
+            import json
+            import re
+
+            json_match = re.search(r'\{\s*"show"\s*:\s*\[', result.stdout)
+            if not json_match:
+                return []
+
+            decoder = json.JSONDecoder()
+            data, _ = decoder.raw_decode(result.stdout, json_match.start())
+
+            if "show" in data:
+                return data["show"]  # type: ignore[no-any-return]
+
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to query table schema for {model_name}: {e}")
+            return []
+
+    def _get_table_columns_from_db(self, model_name: str) -> list[str]:
+        """Get actual column names from database table.
+
+        Args:
+            model_name: Name of the model
+
+        Returns:
+            List of column names from the actual table
+        """
+        schema = self._get_table_schema_from_db(model_name)
+        if not schema:
+            return []
+
+        # Extract column names from schema
+        columns: list[str] = []
+        for row in schema:
+            # Try common column name fields
+            col_name = row.get("column_name") or row.get("Field") or row.get("name") or row.get("COLUMN_NAME")
+            if col_name and isinstance(col_name, str):
+                columns.append(col_name)
+
+        logger.info(f"Extracted {len(columns)} columns for {model_name}: {columns}")
+        return sorted(columns)
+
     def _register_tools(self) -> None:
         """Register all DBT tools."""
 
@@ -264,7 +437,7 @@ class DBTCoreMCPServer:
             ]
 
         @self.app.tool()
-        def get_model_info(name: str) -> dict[str, object]:
+        def get_model_info(name: str, include_database_schema: bool = True) -> dict[str, object]:
             """Get detailed information about a specific DBT model.
 
             Returns the complete manifest node for a model, including all metadata,
@@ -273,17 +446,29 @@ class DBTCoreMCPServer:
 
             Args:
                 name: The name of the model
+                include_database_schema: If True (default), queries the actual database table
+                    schema using DESCRIBE and adds it as 'database_columns' field. This provides
+                    the actual runtime schema vs. the manifest definition.
 
             Returns:
-                Complete model information dictionary from the manifest (without raw_code)
+                Complete model information dictionary from the manifest (without raw_code),
+                optionally enriched with actual database schema
             """
             self._ensure_initialized()
 
             try:
                 node = self.manifest.get_model_node(name)  # type: ignore
-                # Remove raw_code to keep context lightweight
+                # Remove heavy fields to keep context lightweight
                 node_copy = dict(node)
                 node_copy.pop("raw_code", None)
+                node_copy.pop("compiled_code", None)
+
+                # Optionally query actual database schema
+                if include_database_schema:
+                    schema = self._get_table_schema_from_db(name)
+                    if schema:
+                        node_copy["database_columns"] = schema
+
                 return node_copy
             except ValueError as e:
                 raise ValueError(f"Model not found: {e}")
@@ -489,6 +674,362 @@ class DBTCoreMCPServer:
                     "message": f"Failed to parse query results: {e}",
                     "raw_output": output[:500],
                 }
+
+        @self.app.tool()
+        def run_models(
+            select: str | None = None,
+            exclude: str | None = None,
+            modified_only: bool = False,
+            modified_downstream: bool = False,
+            full_refresh: bool = False,
+            fail_fast: bool = False,
+            check_schema_changes: bool = False,
+        ) -> dict[str, object]:
+            """Run DBT models (compile SQL and execute against database).
+
+            Smart selection modes for developers:
+            - modified_only: Run only models that changed since last successful run
+            - modified_downstream: Run changed models + all downstream dependencies
+
+            Manual selection (if not using smart modes):
+            - select: DBT selector syntax (e.g., "customers", "tag:mart", "stg_*")
+            - exclude: Exclude specific models
+
+            Args:
+                select: Manual selector (e.g., "customers", "tag:mart", "path:marts/*")
+                exclude: Exclude selector (e.g., "tag:deprecated")
+                modified_only: Only run models modified since last successful run
+                modified_downstream: Run modified models + downstream dependencies
+                full_refresh: Force full refresh of incremental models
+                fail_fast: Stop execution on first failure
+                check_schema_changes: Detect schema changes and recommend downstream runs
+
+            Returns:
+                Execution results with status, models run, timing info, and optional schema_changes
+
+            Examples:
+                - run_models(select="customers") - Run specific model
+                - run_models(modified_only=True) - Run only what changed
+                - run_models(modified_downstream=True) - Run changed + downstream
+                - run_models(select="tag:mart", full_refresh=True) - Full refresh marts
+                - run_models(modified_only=True, check_schema_changes=True) - Detect schema changes
+            """
+            self._ensure_initialized()
+
+            # Validate: can't use both smart and manual selection
+            if (modified_only or modified_downstream) and select:
+                raise ValueError("Cannot use both modified_* flags and select parameter")
+
+            # Build command args
+            args = ["run"]
+
+            # Handle smart selection
+            # Use relative path since DBT runs from project_dir
+            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+
+            if modified_only or modified_downstream:
+                if not state_dir.exists():
+                    return {
+                        "status": "error",
+                        "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
+                    }
+
+                selector = "state:modified+" if modified_downstream else "state:modified"
+                # Use relative path for --state since cwd=project_dir
+                args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+            # Manual selection
+            elif select:
+                args.extend(["-s", select])
+
+            if exclude:
+                args.extend(["--exclude", exclude])
+
+            if full_refresh:
+                args.append("--full-refresh")
+
+            if fail_fast:
+                args.append("--fail-fast")
+
+            # Capture pre-run table columns for schema change detection
+            pre_run_columns: dict[str, list[str]] = {}
+            if check_schema_changes:
+                # Use dbt list to get models that will be run (without actually running them)
+                list_args = ["list", "--resource-type", "model", "--output", "name"]
+
+                if modified_only or modified_downstream:
+                    selector = "state:modified+" if modified_downstream else "state:modified"
+                    list_args.extend(["-s", selector, "--state", "target/state_last_run"])
+                elif select:
+                    list_args.extend(["-s", select])
+
+                if exclude:
+                    list_args.extend(["--exclude", exclude])
+
+                # Get list of models
+                logger.info(f"Getting model list for schema change detection: {list_args}")
+                list_result = self.runner.invoke(list_args)  # type: ignore
+
+                if list_result.success and list_result.stdout:
+                    # Parse model names from output (one per line with --output name)
+                    for line in list_result.stdout.strip().split("\n"):
+                        line = line.strip()
+                        # Skip log lines, timestamps, empty lines, and JSON output
+                        if (
+                            not line
+                            or line.startswith("{")
+                            or ":" in line[:10]  # Timestamp like "07:39:44"
+                            or "Running with dbt=" in line
+                            or "Registered adapter:" in line
+                        ):
+                            continue
+                        # With --output name, each line is just the model name
+                        model_name = line
+                        # Query pre-run columns
+                        logger.info(f"Querying pre-run columns for {model_name}")
+                        cols = self._get_table_columns_from_db(model_name)
+                        if cols:
+                            pre_run_columns[model_name] = cols
+                        else:
+                            # Table doesn't exist yet - mark as new
+                            pre_run_columns[model_name] = []
+
+            # Execute
+            logger.info(f"Running DBT models with args: {args}")
+            result = self.runner.invoke(args)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Run failed"
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "command": " ".join(args),
+                }
+
+            # Parse run_results.json for details
+            run_results = self._parse_run_results()
+
+            # Check for schema changes if requested
+            schema_changes: dict[str, dict[str, list[str]]] = {}
+            if check_schema_changes and pre_run_columns:
+                logger.info("Detecting schema changes by comparing pre/post-run database columns")
+
+                for model_name, old_columns in pre_run_columns.items():
+                    # Query post-run columns from database
+                    new_columns = self._get_table_columns_from_db(model_name)
+
+                    if not new_columns:
+                        # Model failed to build or was skipped
+                        continue
+
+                    # Compare columns
+                    added = [c for c in new_columns if c not in old_columns]
+                    removed = [c for c in old_columns if c not in new_columns] if old_columns else []
+
+                    if added or removed:
+                        schema_changes[model_name] = {}
+                        if added:
+                            schema_changes[model_name]["added"] = added
+                        if removed:
+                            schema_changes[model_name]["removed"] = removed
+
+            # Save state on success for next modified run
+            if result.success and self.project_dir:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                manifest_path = self.runner.get_manifest_path()  # type: ignore
+                shutil.copy(manifest_path, state_dir / "manifest.json")
+
+            response: dict[str, object] = {
+                "status": "success",
+                "command": " ".join(args),
+                "results": run_results.get("results", []),
+                "elapsed_time": run_results.get("elapsed_time"),
+            }
+
+            if schema_changes:
+                response["schema_changes"] = schema_changes
+                response["recommendation"] = "Schema changes detected. Consider running downstream models with modified_downstream=True to propagate changes."
+
+            return response
+
+        @self.app.tool()
+        def test_models(
+            select: str | None = None,
+            exclude: str | None = None,
+            modified_only: bool = False,
+            modified_downstream: bool = False,
+            fail_fast: bool = False,
+        ) -> dict[str, object]:
+            """Run DBT tests on models and sources.
+
+            Smart selection modes for developers:
+            - modified_only: Test only models that changed since last successful run
+            - modified_downstream: Test changed models + all downstream dependencies
+
+            Manual selection (if not using smart modes):
+            - select: DBT selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
+            - exclude: Exclude specific tests
+
+            Args:
+                select: Manual selector for tests/models to test
+                exclude: Exclude selector
+                modified_only: Only test models modified since last successful run
+                modified_downstream: Test modified models + downstream dependencies
+                fail_fast: Stop execution on first failure
+
+            Returns:
+                Test results with status and failures
+            """
+            self._ensure_initialized()
+
+            # Validate: can't use both smart and manual selection
+            if (modified_only or modified_downstream) and select:
+                raise ValueError("Cannot use both modified_* flags and select parameter")
+
+            # Build command args
+            args = ["test"]
+
+            # Handle smart selection
+            # Use relative path since DBT runs from project_dir
+            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+
+            if modified_only or modified_downstream:
+                if not state_dir.exists():
+                    return {
+                        "status": "error",
+                        "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
+                    }
+
+                selector = "state:modified+" if modified_downstream else "state:modified"
+                # Use relative path for --state since cwd=project_dir
+                args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+            # Manual selection
+            elif select:
+                args.extend(["-s", select])
+
+            if exclude:
+                args.extend(["--exclude", exclude])
+
+            if fail_fast:
+                args.append("--fail-fast")
+
+            # Execute
+            logger.info(f"Running DBT tests with args: {args}")
+            result = self.runner.invoke(args)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Tests failed"
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "command": " ".join(args),
+                }
+
+            # Parse run_results.json for details
+            run_results = self._parse_run_results()
+
+            return {
+                "status": "success",
+                "command": " ".join(args),
+                "results": run_results.get("results", []),
+                "elapsed_time": run_results.get("elapsed_time"),
+            }
+
+        @self.app.tool()
+        def build_models(
+            select: str | None = None,
+            exclude: str | None = None,
+            modified_only: bool = False,
+            modified_downstream: bool = False,
+            full_refresh: bool = False,
+            fail_fast: bool = False,
+        ) -> dict[str, object]:
+            """Run DBT build (run + test in DAG order).
+
+            Smart selection modes for developers:
+            - modified_only: Build only models that changed since last successful run
+            - modified_downstream: Build changed models + all downstream dependencies
+
+            Manual selection (if not using smart modes):
+            - select: DBT selector syntax (e.g., "customers", "tag:mart", "stg_*")
+            - exclude: Exclude specific models
+
+            Args:
+                select: Manual selector
+                exclude: Exclude selector
+                modified_only: Only build models modified since last successful run
+                modified_downstream: Build modified models + downstream dependencies
+                full_refresh: Force full refresh of incremental models
+                fail_fast: Stop execution on first failure
+
+            Returns:
+                Build results with status, models run/tested, and timing info
+            """
+            self._ensure_initialized()
+
+            # Validate: can't use both smart and manual selection
+            if (modified_only or modified_downstream) and select:
+                raise ValueError("Cannot use both modified_* flags and select parameter")
+
+            # Build command args
+            args = ["build"]
+
+            # Handle smart selection
+            # Use relative path since DBT runs from project_dir
+            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+
+            if modified_only or modified_downstream:
+                if not state_dir.exists():
+                    return {
+                        "status": "error",
+                        "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
+                    }
+
+                selector = "state:modified+" if modified_downstream else "state:modified"
+                # Use relative path for --state since cwd=project_dir
+                args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+            # Manual selection
+            elif select:
+                args.extend(["-s", select])
+
+            if exclude:
+                args.extend(["--exclude", exclude])
+
+            if full_refresh:
+                args.append("--full-refresh")
+
+            if fail_fast:
+                args.append("--fail-fast")
+
+            # Execute
+            logger.info(f"Running DBT build with args: {args}")
+            result = self.runner.invoke(args)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Build failed"
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "command": " ".join(args),
+                }
+
+            # Save state on success for next modified run
+            if result.success and self.project_dir:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                manifest_path = self.runner.get_manifest_path()  # type: ignore
+                shutil.copy(manifest_path, state_dir / "manifest.json")
+
+            # Parse run_results.json for details
+            run_results = self._parse_run_results()
+
+            return {
+                "status": "success",
+                "command": " ".join(args),
+                "results": run_results.get("results", []),
+                "elapsed_time": run_results.get("elapsed_time"),
+            }
 
         logger.info("Registered DBT tools")
 

@@ -1,53 +1,19 @@
-# DBT Core MCP Server
+# dbt Core MCP Server
 
-An MCP (Model Context Protocol) server for interacting with DBT (Data Build Tool) projects.
+An MCP (Model Context Protocol) server for interacting with dbt (Data Build Tool) projects.
 
 ## Overview
 
-This server provides tools to interact with DBT projects via the Model Context Protocol, enabling AI assistants to:
-- Query DBT project metadata and configuration
+This server provides tools to interact with dbt projects via the Model Context Protocol, enabling AI assistants to:
+- Query dbt project metadata and configuration
 - Get detailed model and source information with full manifest metadata
 - Execute SQL queries with Jinja templating support ({{ ref() }}, {{ source() }})
 - Inspect models, sources, and tests
-- Access DBT documentation and lineage
+- Access dbt documentation and lineage
 
-## Installation
+## Installation & Configuration
 
-### From PyPI (when published)
-
-The easiest way to use this MCP server is with `uvx` (no installation needed):
-
-```bash
-# Run directly with uvx (recommended)
-uvx dbt-core-mcp
-```
-
-Or install it permanently:
-
-```bash
-# Using uv
-uv tool install dbt-core-mcp
-
-# Using pipx
-pipx install dbt-core-mcp
-
-# Or using pip
-pip install dbt-core-mcp
-```
-
-## Usage
-
-### Running the Server
-
-```bash
-# Run with default settings
-dbt-core-mcp
-
-# Enable debug logging
-dbt-core-mcp --debug
-```
-
-The server automatically detects DBT projects from workspace roots provided by VS Code.
+This MCP server is designed to run within VS Code via the Model Context Protocol. It's automatically invoked by VS Code when needed - you don't run it directly from the command line.
 
 ### Configuration for VS Code
 
@@ -117,178 +83,184 @@ Or with `pipx`:
 
 ## Requirements
 
-- **DBT Core**: Version 1.9.0 or higher
+- **dbt Core**: Version 1.9.0 or higher
 - **Python**: 3.9 or higher
-- **Supported Adapters**: Any DBT adapter (dbt-duckdb, dbt-postgres, dbt-snowflake, etc.)
+- **Supported Adapters**: Any dbt adapter (dbt-duckdb, dbt-postgres, dbt-snowflake, etc.)
 
 ## Limitations
 
-- **Python models**: Not currently supported. Only SQL-based DBT models are supported at this time.
-- **DBT Version**: Requires dbt-core 1.9.0 or higher
+- **Python models**: Not currently supported. Only SQL-based dbt models are supported at this time.
+- **dbt Version**: Requires dbt Core 1.9.0 or higher
 
 ## Features
 
 ✅ **Implemented:**
-- Get DBT project information (version, adapter, counts, paths, status)
-- List all models with metadata and dependencies
-- List all sources with identifiers
-- **Get detailed model information** with all manifest metadata (~40 fields)
-- **Get detailed source information** with complete configuration
-- **Get compiled SQL for models** with smart caching and Jinja resolution
-- Refresh manifest (run `dbt parse`)
-- **Query database with Jinja templating** ({{ ref('model') }}, {{ source('src', 'table') }})
-- Full SQL support (SELECT, DESCRIBE, EXPLAIN, aggregations, JOINs)
-- Configurable result limits (no forced LIMIT clauses)
-- Automatic environment detection (uv, poetry, pipenv, venv, conda)
-- Bridge runner for executing DBT in user's environment
-- Lazy-loaded configuration with file modification tracking
-- Concurrency protection for safe DBT execution
+- Query dbt project metadata (version, adapter, model/source counts)
+- List and inspect models and sources with full details
+- Execute SQL queries with dbt's ref() and source() functions
+- Get compiled SQL for any model
+- Run, test, and build models with smart change detection
+- Detect schema changes (added/removed columns)
+- State-based execution for fast iteration
+- Works with any dbt adapter (DuckDB, Snowflake, BigQuery, Postgres, etc.)
 
 🚧 **Planned:**
-- Run specific models
-- Test models  
 - View model lineage graph
-- Access DBT documentation
-- Execute custom DBT commands with streaming output
+- Seed and snapshot commands
+- Custom dbt commands with streaming output
 
 ## Available Tools
 
 ### `get_project_info`
-Returns metadata about the DBT project including:
-- Project name
-- DBT version
-- Adapter type (e.g., duckdb, postgres, snowflake)
-- Model and source counts
-- Project and profiles directory paths
-- Status indicator
+Get basic information about your dbt project including name, version, adapter type, and model/source counts.
 
 ### `list_models`
-Lists all models in the project with:
-- Name and unique ID
-- Schema and database
-- Materialization type (table, view, incremental, etc.)
-- Tags and descriptions
-- Dependencies on other models/sources
-- File path
+List all models in your project with their names, schemas, materialization types, tags, and dependencies.
 
 ### `list_sources`
-Lists all sources in the project with:
-- Source and table names
-- Schema and database
-- Identifiers
-- Description and tags
-- Package name
+List all sources in your project with their identifiers, schemas, and descriptions.
 
 ### `get_model_info`
-Get detailed information about a specific DBT model:
-- Returns the complete manifest node for a model (~40 fields)
-- Includes all metadata, columns, configuration, dependencies, and more
-- Excludes `raw_code` to keep context lightweight (use file path to read SQL)
-- Examples: column definitions, tests, materialization config, tags, meta, etc.
+Get complete information about a specific model including configuration, dependencies, and actual database schema.
 
-**Usage:** `get_model_info(name="customers")` or `get_model_info(name="staging.stg_orders")`
+**Parameters:**
+- `name`: Model name (e.g., "customers")
+- `include_database_schema`: Include actual column types from database (default: true)
+
+**Example:**
+```python
+get_model_info(name="customers")
+# Returns manifest metadata + database columns with types
+```
 
 ### `get_source_info`
-Get detailed information about a specific DBT source:
-- Returns the complete manifest source node (~31 fields)
-- Includes all metadata, columns, freshness configuration, etc.
-- Source-specific settings like loader, identifier, quoting, etc.
+Get detailed information about a specific source including all configuration and metadata.
 
-**Usage:** `get_source_info(source_name="jaffle_shop", table_name="customers")`
+**Parameters:**
+- `source_name`: Source name (e.g., "jaffle_shop")
+- `table_name`: Table name within the source (e.g., "customers")
 
 ### `get_compiled_sql`
-Get the compiled SQL for a specific DBT model:
-- Returns the fully compiled SQL with all Jinja templating rendered
-- `{{ ref() }}`, `{{ source() }}`, etc. resolved to actual table names
-- Smart caching: only compiles if not already compiled
-- Force option to recompile even if cached
-- Runs `dbt compile -s <model>` only when needed
+Get the fully compiled SQL for a model with all Jinja templating resolved to actual table names.
 
-**Usage:** 
-- `get_compiled_sql(name="customers")` - Uses cache if available
-- `get_compiled_sql(name="customers", force=True)` - Forces recompilation
+**Parameters:**
+- `name`: Model name
+- `force`: Force recompilation even if cached (default: false)
 
-**Returns:**
-```json
-{
-  "model_name": "customers",
-  "compiled_sql": "with customers as (\n  select * from \"jaffle_shop\".\"main\".\"stg_customers\"\n)...",
-  "status": "success",
-  "cached": true
-}
+**Example:**
+```python
+get_compiled_sql(name="customers")
+# Returns SQL with {{ ref() }} replaced by actual table paths
 ```
 
 ### `refresh_manifest`
-Refreshes the DBT manifest by running `dbt parse`:
-- Force option to always re-parse
-- Returns status with model and source counts
-- Updates cached project metadata
+Update the dbt manifest by running `dbt parse`. Use after making changes to model files.
 
 ### `query_database`
-Execute SQL queries against the DBT project's database with Jinja templating support:
-- **Jinja templating**: Use `{{ ref('model_name') }}` and `{{ source('source', 'table') }}`
-- Supports any SQL command (SELECT, DESCRIBE, EXPLAIN, aggregations, JOINs, etc.)
-- Works with any DBT adapter (DuckDB, Snowflake, BigQuery, Postgres, etc.)
-- Configurable row limits or unlimited results
-- Returns structured JSON with row data and count
-- Uses `dbt show --inline` for query execution
+Execute SQL queries against your database using dbt's ref() and source() functions.
+
+**Parameters:**
+- `sql`: SQL query with optional {{ ref() }} and {{ source() }} functions
+- `limit`: Maximum rows to return (optional, defaults to unlimited)
 
 **Examples:**
 ```sql
--- Reference DBT models
-SELECT * FROM {{ ref('customers') }}
+-- Query a model
+SELECT * FROM {{ ref('customers') }} LIMIT 10
 
--- Reference sources
-SELECT * FROM {{ source('jaffle_shop', 'orders') }} LIMIT 10
+-- Query a source
+SELECT * FROM {{ source('jaffle_shop', 'orders') }}
 
--- Schema inspection
+-- Inspect schema
 DESCRIBE {{ ref('stg_customers') }}
 
 -- Aggregations
-SELECT COUNT(*) as total FROM {{ ref('orders') }}
+SELECT COUNT(*) FROM {{ ref('orders') }}
 ```
 
-**Key Features:**
-- Executes via `dbt show --inline` with full Jinja compilation
-- Clean JSON output parsed from DBT results
-- No forced LIMIT clauses when `limit=None`
-- Full DBT adapter compatibility
+### `run_models`
+Run dbt models with smart selection for fast development:
+
+**Smart selection modes:**
+- `modified_only`: Run only models that changed
+- `modified_downstream`: Run changed models + everything downstream
+
+**Other parameters:**
+- `select`: Model selector (e.g., "customers", "tag:mart")
+- `exclude`: Exclude models
+- `full_refresh`: Force full refresh for incremental models
+- `fail_fast`: Stop on first failure
+- `check_schema_changes`: Detect column additions/removals
+
+**Examples:**
+```python
+# Run only changed models (fast!)
+run_models(modified_only=True)
+
+# Run changes + downstream dependencies
+run_models(modified_downstream=True)
+
+# Detect schema changes
+run_models(modified_only=True, check_schema_changes=True)
+
+# Run specific model
+run_models(select="customers")
+```
+
+**Schema Change Detection:**
+When enabled, detects added or removed columns and recommends running downstream models to propagate changes.
+
+### `test_models`
+Run dbt tests with smart selection:
+
+**Parameters:**
+- `modified_only`: Test only changed models
+- `modified_downstream`: Test changed models + downstream
+- `select`: Test selector (e.g., "customers", "tag:mart")
+- `exclude`: Exclude tests
+- `fail_fast`: Stop on first failure
+
+**Example:**
+```python
+test_models(modified_downstream=True)
+```
+
+### `build_models`
+Run models and tests together in dependency order (most efficient approach):
+
+**Example:**
+```python
+build_models(modified_downstream=True)
+```
+
+## Developer Workflow
+
+Fast iteration with smart selection:
+
+```python
+# 1. Edit a model file
+# 2. Run only what changed (~0.3s vs full project ~5s)
+run_models(modified_only=True)
+
+# 3. Run downstream dependencies
+run_models(modified_downstream=True)
+
+# 4. Test everything affected
+test_models(modified_downstream=True)
+```
+
+The first run establishes a baseline state automatically. Subsequent runs detect changes and run only what's needed.
 
 ## How It Works
 
-This server uses a "bridge runner" approach to execute DBT in your project's Python environment:
+This server executes dbt commands in your project's Python environment:
 
-1. **Environment Detection**: Automatically detects your Python environment (uv, poetry, pipenv, venv, conda)
-2. **Subprocess Bridge**: Executes DBT commands using inline Python scripts in your environment
-3. **Manifest Parsing**: Reads and caches `target/manifest.json` for model and source metadata
-4. **Query Execution**: Uses `dbt show --inline` for SQL queries with Jinja templating
-5. **No Version Conflicts**: Uses your exact dbt-core version and adapter without conflicts
-6. **Concurrency Protection**: Detects running DBT processes and waits for completion to prevent conflicts
+1. **Environment Detection**: Automatically finds your Python environment (uv, poetry, venv, conda, etc.)
+2. **Bridge Execution**: Runs dbt commands using your exact dbt Core version and adapter
+3. **No Conflicts**: Uses subprocess execution to avoid version conflicts with the MCP server
+4. **Concurrency Safety**: Detects and waits for existing dbt processes to prevent database lock conflicts
 
-### Query Database Implementation
-
-The `query_database` tool uses `dbt show --inline` for maximum flexibility:
-
-- **Jinja Templating**: Full support for `{{ ref() }}` and `{{ source() }}` in queries
-- **DBT show command**: Executes SQL via DBT's native show functionality
-- **Configurable Limits**: Optional `limit` parameter, uses `--limit -1` for unlimited results
-- **JSON Output**: Parses structured JSON from `dbt show` output
-- **Universal SQL Support**: Works with SELECT, DESCRIBE, EXPLAIN, aggregations, JOINs, etc.
-- **Universal Adapter Support**: Works with any DBT adapter (DuckDB, Snowflake, BigQuery, Postgres, etc.)
-- **Lazy Configuration**: Project config loaded once and cached with modification time checking
-
-This approach provides full Jinja compilation at runtime while maintaining DBT's connection management and adapter compatibility.
-
-### Concurrency Safety
-
-The server includes built-in protection against concurrent DBT execution:
-
-- **Process Detection**: Automatically detects if DBT is already running in the same project
-- **Smart Waiting**: Waits up to 10 seconds (polling every 0.2s) for running DBT commands to complete
-- **Safe Execution**: Only proceeds when no conflicting DBT processes are detected
-- **Database Lock Handling**: Prevents common file locking issues (especially with DuckDB)
-
-**Note**: If you're running `dbt run` or `dbt test` manually, the MCP server will wait for completion before executing its own commands. This prevents database lock conflicts and ensures data consistency.
+The server reads dbt's manifest.json for metadata and uses `dbt show --inline` for SQL query execution with full Jinja templating support.
 
 ## Contributing
 
