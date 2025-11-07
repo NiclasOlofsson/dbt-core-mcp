@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/niclasolofsson-dbt-core-mcp-badge.png)](https://mseep.ai/app/niclasolofsson-dbt-core-mcp)
+
 # dbt Core MCP Server
 
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=dbtcore&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22dbt-core-mcp%22%5D%7D)
