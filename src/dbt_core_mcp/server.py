@@ -264,6 +264,31 @@ class DBTCoreMCPServer:
             ]
 
         @self.app.tool()
+        def get_model_info(name: str) -> dict[str, object]:
+            """Get detailed information about a specific DBT model.
+
+            Returns the complete manifest node for a model, including all metadata,
+            columns, configuration, dependencies, and more. Excludes raw_code to keep
+            context lightweight (use file path to read SQL when needed).
+
+            Args:
+                name: The name of the model
+
+            Returns:
+                Complete model information dictionary from the manifest (without raw_code)
+            """
+            self._ensure_initialized()
+
+            try:
+                node = self.manifest.get_model_node(name)  # type: ignore
+                # Remove raw_code to keep context lightweight
+                node_copy = dict(node)
+                node_copy.pop("raw_code", None)
+                return node_copy
+            except ValueError as e:
+                raise ValueError(f"Model not found: {e}")
+
+        @self.app.tool()
         def list_sources() -> list[dict[str, object]]:
             """List all sources in the DBT project.
 
@@ -287,6 +312,28 @@ class DBTCoreMCPServer:
                 }
                 for s in sources
             ]
+
+        @self.app.tool()
+        def get_source_info(source_name: str, table_name: str) -> dict[str, object]:
+            """Get detailed information about a specific DBT source.
+
+            Returns the complete manifest source node, including all metadata,
+            columns, freshness configuration, etc.
+
+            Args:
+                source_name: The source name (e.g., 'jaffle_shop')
+                table_name: The table name within the source (e.g., 'customers')
+
+            Returns:
+                Complete source information dictionary from the manifest
+            """
+            self._ensure_initialized()
+
+            try:
+                source = self.manifest.get_source_node(source_name, table_name)  # type: ignore
+                return source
+            except ValueError as e:
+                raise ValueError(f"Source not found: {e}")
 
         @self.app.tool()
         def refresh_manifest(force: bool = True) -> dict[str, object]:
@@ -320,28 +367,24 @@ class DBTCoreMCPServer:
         def query_database(sql: str, limit: int | None = None) -> dict[str, object]:
             """Execute a SQL query against the DBT project's database.
 
-            Uses dbt run-operation with the __mcp_execute_sql macro to execute queries
-            through DBT's adapter layer, supporting any database adapter that DBT supports
-            (DuckDB, Snowflake, BigQuery, Postgres, Redshift, Databricks, etc.).
-
-            Unlike dbt show, this approach does NOT add automatic LIMIT clauses, allowing
-            DESCRIBE, EXPLAIN, and other non-SELECT commands to work correctly.
+            Uses dbt show --inline to execute queries with full Jinja templating support.
+            Supports {{ ref('model_name') }} and {{ source('source_name', 'table_name') }}.
 
             Args:
-                sql: SQL query to execute (can be SELECT, DESCRIBE, EXPLAIN, etc.)
-                limit: Optional maximum number of rows to return. Only applies to SELECT queries.
-                       For SELECT queries, it's recommended to use a small limit (e.g., 10-100)
-                       to avoid retrieving large datasets.
+                sql: SQL query to execute. Supports Jinja: {{ ref('model') }}, {{ source('src', 'table') }}
+                     Can be SELECT, DESCRIBE, EXPLAIN, aggregations, JOINs, etc.
+                limit: Optional maximum number of rows to return. If None (default), returns all rows.
+                       If specified, limits the result set to that number of rows.
 
             Returns:
-                Query results with column names and rows
+                Query results with rows in JSON format
             """
             self._ensure_initialized()
 
             if not self.adapter_type:
                 raise RuntimeError("Adapter type not detected")
 
-            # Execute query using dbt run-operation
+            # Execute query using dbt show --inline
             result = self.runner.invoke_query(sql, limit)  # type: ignore
 
             if not result.success:
@@ -351,47 +394,46 @@ class DBTCoreMCPServer:
                     "status": "failed",
                 }
 
-            # Parse JSON output from macro between markers
+            # Parse JSON output from dbt show
             import json
             import re
 
             output = result.stdout if hasattr(result, "stdout") else ""
 
-            # Extract content between markers
-            start_marker = "__MCP_QUERY_RESULTS_START__"
-            end_marker = "__MCP_QUERY_RESULTS_END__"
+            try:
+                # dbt show --output json returns: {"show": [...rows...]}
+                # Find the JSON object (look for {"show": pattern)
+                json_match = re.search(r'\{\s*"show"\s*:\s*\[', output)
+                if not json_match:
+                    return {
+                        "error": "No JSON output found in dbt show response",
+                        "status": "failed",
+                    }
 
-            start_idx = output.find(start_marker)
-            end_idx = output.find(end_marker)
+                # Use JSONDecoder to parse just the first complete JSON object
+                # This handles extra data after the JSON (like log lines)
+                decoder = json.JSONDecoder()
+                data, idx = decoder.raw_decode(output, json_match.start())
 
-            if start_idx != -1 and end_idx != -1:
-                # Extract everything between markers
-                json_section = output[start_idx + len(start_marker) : end_idx]
+                if "show" in data:
+                    return {
+                        "rows": data["show"],
+                        "row_count": len(data["show"]),
+                        "status": "success",
+                    }
+                else:
+                    return {
+                        "error": "Unexpected JSON format from dbt show",
+                        "status": "failed",
+                        "data": data,
+                    }
 
-                # Find the actual JSON array (use greedy match for the full array)
-                json_match = re.search(r"(\[.+\])", json_section, re.DOTALL)
-
-                if json_match:
-                    try:
-                        json_data = json.loads(json_match.group(1))
-                        return {
-                            "status": "success",
-                            "data": json_data,
-                            "row_count": len(json_data) if isinstance(json_data, list) else None,
-                        }
-                    except json.JSONDecodeError as e:
-                        return {
-                            "status": "error",
-                            "message": f"Failed to parse query results: {e}",
-                            "raw_json": json_match.group(1)[:500],
-                        }
-
-            # Fallback: return raw output if markers not found
-            return {
-                "status": "success",
-                "message": "Query executed (no structured output)",
-                "output": output,
-            }
+            except json.JSONDecodeError as e:
+                return {
+                    "status": "error",
+                    "message": f"Failed to parse query results: {e}",
+                    "raw_output": output[:500],
+                }
 
         logger.info("Registered DBT tools")
 

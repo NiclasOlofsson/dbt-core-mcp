@@ -155,6 +155,61 @@ class ManifestLoader:
                 return model
         return None
 
+    def get_model_node(self, name: str) -> dict:
+        """
+        Get the raw manifest node for a model by name.
+
+        Returns the complete node dictionary from the manifest with all ~40 fields,
+        including columns, raw_code, compiled_path, config, meta, etc.
+
+        Args:
+            name: Model name
+
+        Returns:
+            Complete manifest node dictionary
+
+        Raises:
+            RuntimeError: If manifest not loaded
+            ValueError: If model not found
+        """
+        if not self._manifest:
+            raise RuntimeError("Manifest not loaded. Call load() first.")
+
+        nodes = self._manifest.get("nodes", {})
+        for unique_id, node in nodes.items():
+            if node.get("resource_type") == "model" and node.get("name") == name:
+                return dict(node)  # type cast to satisfy mypy
+
+        raise ValueError(f"Model '{name}' not found in manifest")
+
+    def get_source_node(self, source_name: str, table_name: str) -> dict:
+        """
+        Get the raw manifest node for a source by source name and table name.
+
+        Returns the complete source dictionary from the manifest with all fields,
+        including columns, freshness, config, meta, etc.
+
+        Args:
+            source_name: Source name (e.g., 'jaffle_shop')
+            table_name: Table name within the source (e.g., 'customers')
+
+        Returns:
+            Complete manifest source dictionary
+
+        Raises:
+            RuntimeError: If manifest not loaded
+            ValueError: If source not found
+        """
+        if not self._manifest:
+            raise RuntimeError("Manifest not loaded. Call load() first.")
+
+        sources = self._manifest.get("sources", {})
+        for unique_id, source in sources.items():
+            if source.get("source_name") == source_name and source.get("name") == table_name:
+                return dict(source)  # type cast to satisfy mypy
+
+        raise ValueError(f"Source '{source_name}.{table_name}' not found in manifest")
+
     def get_project_info(self) -> dict:
         """
         Get high-level project information from the manifest.
