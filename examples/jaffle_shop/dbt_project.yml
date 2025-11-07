@@ -16,11 +16,3 @@ snapshot-paths: ["snapshots"]
 clean-targets:
   - "target"
   - "dbt_packages"
-
-models:
-  jaffle_shop:
-    +materialized: view
-    staging:
-      +materialized: view
-    marts:
-      +materialized: table

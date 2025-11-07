@@ -15,29 +15,39 @@ from .server import create_server
 
 def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration."""
-    level = logging.DEBUG if debug else logging.INFO
     import os
     import tempfile
 
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    level = logging.DEBUG if debug else logging.INFO
+
+    # Simpler format for stderr (VS Code adds timestamps)
+    stderr_formatter = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
+    # Full format for file logging
+    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(stderr_formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    root_logger.addHandler(stderr_handler)
+
+    # Suppress FastMCP's internal INFO logs (they use structlog formatting)
+    logging.getLogger("fastmcp").setLevel(logging.WARNING)
+
+    # Add file logging
     try:
         temp_log_dir = os.path.join(tempfile.gettempdir(), "dbt_core_mcp_logs")
         os.makedirs(temp_log_dir, exist_ok=True)
         log_path = os.path.join(temp_log_dir, "dbt_core_mcp.log")
+
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-        handlers.append(file_handler)
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+
         print(f"[DBT Core MCP] Log file: {log_path}", file=sys.stderr)
     except Exception:
-        pass  # If file can't be opened, just use stderr
-
-    handlers[0].setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=handlers,
-    )
+        pass
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -65,20 +75,15 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> None:
     """Main entry point."""
     args = parse_arguments()
-
-    # Set up logging
     setup_logging(args.debug)
 
-    # Create and run the server
     from . import __version__
 
     logging.info(f"Running version {__version__}")
     server = create_server(project_dir=args.project_dir)
 
     try:
-        # Run the server with stdio transport (MCP standard)
         server.run()
-
     except KeyboardInterrupt:
         logging.info("Server stopped by user")
     except Exception as e:

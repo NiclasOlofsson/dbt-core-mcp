@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "dbt-core": {
+      "command": "uv",
+      "args": [
+        "run",
+        "dbt-core-mcp",
+        "--project-dir",
+        "examples/jaffle_shop"
+      ],
+      "cwd": "."
+    }
+  }
+}

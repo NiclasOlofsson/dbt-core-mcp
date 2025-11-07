@@ -10,6 +10,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ..utils.process_check import is_dbt_running, wait_for_dbt_completion
 from .runner import DbtRunnerResult
 
 logger = logging.getLogger(__name__)
@@ -51,23 +52,38 @@ class BridgeRunner:
         Returns:
             Result of the command execution
         """
+        # Check if DBT is already running and wait for completion
+        if is_dbt_running(self.project_dir):
+            logger.info("DBT process detected, waiting for completion...")
+            if not wait_for_dbt_completion(self.project_dir, timeout=10.0, poll_interval=0.2):
+                logger.error("Timeout waiting for DBT process to complete")
+                return DbtRunnerResult(
+                    success=False,
+                    exception=RuntimeError("DBT is already running in this project. Please wait for it to complete."),
+                )
+
         # Build inline Python script to execute dbtRunner
         script = self._build_script(args)
 
         # Execute in user's environment
         full_command = [*self.python_command, "-c", script]
 
-        logger.debug(f"Executing DBT command: {args}")
-        logger.debug(f"Using Python: {self.python_command}")
+        logger.info(f"Executing DBT command: {args}")
+        logger.info(f"Using Python: {self.python_command}")
+        logger.info(f"Working directory: {self.project_dir}")
 
         try:
+            logger.info("Starting subprocess...")
             result = subprocess.run(
                 full_command,
                 cwd=self.project_dir,
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=60.0,  # 60 second timeout to prevent indefinite hangs
+                stdin=subprocess.DEVNULL,  # Ensure subprocess doesn't wait for input
             )
+            logger.info(f"Subprocess completed with return code: {result.returncode}")
 
             # Parse result from stdout
             if result.returncode == 0:
@@ -78,20 +94,29 @@ class BridgeRunner:
                     success = output.get("success", False)
                     logger.info(f"DBT command {'succeeded' if success else 'failed'}: {args}")
                     return DbtRunnerResult(success=success)
-                except (json.JSONDecodeError, IndexError):
+                except (json.JSONDecodeError, IndexError) as e:
                     # If no JSON output, check return code
-                    logger.warning(f"No JSON output from DBT command, using return code. stdout: {result.stdout}")
+                    logger.warning(f"No JSON output from DBT command: {e}. stdout: {result.stdout[:200]}")
                     return DbtRunnerResult(success=True)
             else:
-                error_msg = result.stderr or result.stdout
+                # Non-zero return code indicates failure
+                error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
                 logger.error(f"DBT command failed with code {result.returncode}")
-                logger.error(f"stdout: {result.stdout}")
-                logger.error(f"stderr: {result.stderr}")
+                logger.debug(f"stdout: {result.stdout[:500]}")
+                logger.debug(f"stderr: {result.stderr[:500]}")
+
+                # Try to extract meaningful error from stderr or stdout
+                if not error_msg and result.stdout:
+                    error_msg = result.stdout.strip()
+
                 return DbtRunnerResult(
                     success=False,
-                    exception=RuntimeError(f"DBT command failed: {error_msg}"),
+                    exception=RuntimeError(f"DBT command failed (exit code {result.returncode}): {error_msg[:500]}"),
                 )
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"DBT command timed out after 60 seconds: {args}")
+            return DbtRunnerResult(success=False, exception=RuntimeError("DBT command timed out after 60 seconds"))
         except Exception as e:
             logger.exception(f"Error executing DBT command: {e}")
             return DbtRunnerResult(success=False, exception=e)
@@ -120,18 +145,28 @@ class BridgeRunner:
         script = f"""
 import sys
 import json
-from dbt.cli.main import dbtRunner
+import os
 
-# Execute dbtRunner with arguments
+# Disable interactive prompts
+os.environ['DBT_USE_COLORS'] = '0'
+os.environ['DBT_PRINTER_WIDTH'] = '80'
+
 try:
+    from dbt.cli.main import dbtRunner
+    
+    # Execute dbtRunner with arguments
     dbt = dbtRunner()
     result = dbt.invoke({args_json})
     
     # Return success status
-    print(json.dumps({{"success": result.success}}))
+    output = {{"success": result.success}}
+    print(json.dumps(output))
     sys.exit(0 if result.success else 1)
+    
 except Exception as e:
-    print(json.dumps({{"success": False, "error": str(e)}}), file=sys.stderr)
+    # Ensure we always exit, even on error
+    error_output = {{"success": False, "error": str(e)}}
+    print(json.dumps(error_output))
     sys.exit(1)
 """
         return script

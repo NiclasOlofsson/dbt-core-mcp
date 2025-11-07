@@ -176,6 +176,18 @@ This server uses a "bridge runner" approach to execute DBT in your project's Pyt
 2. **Subprocess Bridge**: Executes DBT commands using inline Python scripts in your environment
 3. **Manifest Parsing**: Reads `target/manifest.json` for model and source metadata
 4. **No Version Conflicts**: Uses your exact dbt-core version and adapter without conflicts
+5. **Concurrency Protection**: Detects running DBT processes and waits for completion to prevent conflicts
+
+### Concurrency Safety
+
+The server includes built-in protection against concurrent DBT execution:
+
+- **Process Detection**: Automatically detects if DBT is already running in the same project
+- **Smart Waiting**: Waits up to 10 seconds (polling every 0.2s) for running DBT commands to complete
+- **Safe Execution**: Only proceeds when no conflicting DBT processes are detected
+- **Database Lock Handling**: Prevents common file locking issues (especially with DuckDB)
+
+**Note**: If you're running `dbt run` or `dbt test` manually, the MCP server will wait for completion before executing its own commands. This prevents database lock conflicts and ensures data consistency.
 
 ## Contributing
 

@@ -2,9 +2,12 @@ version: 2
 
 sources:
   - name: jaffle_shop
-    description: Raw data from the jaffle shop
+    description: Raw data from the jaffle shop (using seeds for this example)
+    database: main
+    schema: main
     tables:
       - name: customers
+        identifier: raw_customers
         description: Raw customer data
         columns:
           - name: id
@@ -15,6 +18,7 @@ sources:
             description: Customer's last name
 
       - name: orders
+        identifier: raw_orders
         description: Raw order data
         columns:
           - name: id
