@@ -129,20 +129,24 @@ Or with `pipx`:
 ## Features
 
 ✅ **Implemented:**
-- Get DBT project information (version, adapter, counts)
-- List all models with metadata
-- List all sources
+- Get DBT project information (version, adapter, counts, paths, status)
+- List all models with metadata and dependencies
+- List all sources with identifiers
+- Refresh manifest (run `dbt parse`)
+- **Query database with full SQL support** (SELECT, DESCRIBE, EXPLAIN, DDL)
+- Auto-managed macro with version tracking
 - Automatic environment detection (uv, poetry, pipenv, venv, conda)
 - Bridge runner for executing DBT in user's environment
+- Lazy-loaded configuration with file modification tracking
+- Concurrency protection for safe DBT execution
 
 🚧 **Planned:**
-- Get model information and metadata (enhanced)
-- View compiled SQL
+- View compiled SQL for models
 - Run specific models
-- Test models
-- View model lineage
+- Test models  
+- View model lineage graph
 - Access DBT documentation
-- Execute custom DBT commands
+- Execute custom DBT commands with streaming output
 
 ## Available Tools
 
@@ -152,21 +156,46 @@ Returns metadata about the DBT project including:
 - DBT version
 - Adapter type (e.g., duckdb, postgres, snowflake)
 - Model and source counts
+- Project and profiles directory paths
+- Status indicator
 
 ### `list_models`
 Lists all models in the project with:
 - Name and unique ID
 - Schema and database
 - Materialization type (table, view, incremental, etc.)
-- Tags
-- Dependencies
+- Tags and descriptions
+- Dependencies on other models/sources
 - File path
 
 ### `list_sources`
 Lists all sources in the project with:
 - Source and table names
 - Schema and database
+- Identifiers
 - Description and tags
+- Package name
+
+### `refresh_manifest`
+Refreshes the DBT manifest by running `dbt parse`:
+- Force option to always re-parse
+- Returns status with model and source counts
+- Updates cached project metadata
+
+### `query_database`
+Execute SQL queries against the DBT project's database:
+- Supports any SQL command (SELECT, DESCRIBE, EXPLAIN, DDL, etc.)
+- Works with any DBT adapter (DuckDB, Snowflake, BigQuery, Postgres, etc.)
+- **No forced LIMIT clauses** - unlike `dbt show`
+- Returns structured JSON with row data and count
+- Optional limit parameter for SELECT queries
+- Uses `dbt run-operation` with auto-managed macro
+
+**Key Features:**
+- Auto-creates and version-tracks the `__mcp_execute_sql` macro
+- Executes via DBT's adapter layer for full compatibility
+- Clean JSON output without DBT logs
+- Supports schema inspection (DESCRIBE) and query planning (EXPLAIN)
 
 ## How It Works
 
@@ -174,9 +203,24 @@ This server uses a "bridge runner" approach to execute DBT in your project's Pyt
 
 1. **Environment Detection**: Automatically detects your Python environment (uv, poetry, pipenv, venv, conda)
 2. **Subprocess Bridge**: Executes DBT commands using inline Python scripts in your environment
-3. **Manifest Parsing**: Reads `target/manifest.json` for model and source metadata
-4. **No Version Conflicts**: Uses your exact dbt-core version and adapter without conflicts
-5. **Concurrency Protection**: Detects running DBT processes and waits for completion to prevent conflicts
+3. **Manifest Parsing**: Reads and caches `target/manifest.json` for model and source metadata
+4. **Query Execution**: Uses `dbt run-operation` with auto-managed macros for database queries
+5. **Version Tracking**: Automatically updates macros when server version changes
+6. **No Version Conflicts**: Uses your exact dbt-core version and adapter without conflicts
+7. **Concurrency Protection**: Detects running DBT processes and waits for completion to prevent conflicts
+
+### Query Database Implementation
+
+The `query_database` tool uses an innovative approach:
+
+- **Auto-managed Macro**: Creates `macros/__mcp_execute_sql.sql` if missing
+- **Version Tracking**: Semantic versioning in macro comments, auto-updates on mismatch
+- **DBT run-operation**: Executes SQL via `run_query()` without forced LIMIT clauses
+- **Structured Output**: JSON results wrapped in log markers for clean parsing
+- **Universal Adapter Support**: Works with any DBT adapter (DuckDB, Snowflake, BigQuery, Postgres, etc.)
+- **Lazy Configuration**: Project config loaded once and cached with modification time checking
+
+This enables full SQL flexibility (DESCRIBE, EXPLAIN, DDL) while maintaining DBT's connection management.
 
 ### Concurrency Safety
 

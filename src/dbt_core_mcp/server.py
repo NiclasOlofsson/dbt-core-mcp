@@ -316,6 +316,83 @@ class DBTCoreMCPServer:
                     "message": f"Failed to refresh manifest: {str(e)}",
                 }
 
+        @self.app.tool()
+        def query_database(sql: str, limit: int | None = None) -> dict[str, object]:
+            """Execute a SQL query against the DBT project's database.
+
+            Uses dbt run-operation with the __mcp_execute_sql macro to execute queries
+            through DBT's adapter layer, supporting any database adapter that DBT supports
+            (DuckDB, Snowflake, BigQuery, Postgres, Redshift, Databricks, etc.).
+
+            Unlike dbt show, this approach does NOT add automatic LIMIT clauses, allowing
+            DESCRIBE, EXPLAIN, and other non-SELECT commands to work correctly.
+
+            Args:
+                sql: SQL query to execute (can be SELECT, DESCRIBE, EXPLAIN, etc.)
+                limit: Optional maximum number of rows to return. Only applies to SELECT queries.
+                       For SELECT queries, it's recommended to use a small limit (e.g., 10-100)
+                       to avoid retrieving large datasets.
+
+            Returns:
+                Query results with column names and rows
+            """
+            self._ensure_initialized()
+
+            if not self.adapter_type:
+                raise RuntimeError("Adapter type not detected")
+
+            # Execute query using dbt run-operation
+            result = self.runner.invoke_query(sql, limit)  # type: ignore
+
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Unknown error"
+                return {
+                    "error": error_msg,
+                    "status": "failed",
+                }
+
+            # Parse JSON output from macro between markers
+            import json
+            import re
+
+            output = result.stdout if hasattr(result, "stdout") else ""
+
+            # Extract content between markers
+            start_marker = "__MCP_QUERY_RESULTS_START__"
+            end_marker = "__MCP_QUERY_RESULTS_END__"
+
+            start_idx = output.find(start_marker)
+            end_idx = output.find(end_marker)
+
+            if start_idx != -1 and end_idx != -1:
+                # Extract everything between markers
+                json_section = output[start_idx + len(start_marker) : end_idx]
+
+                # Find the actual JSON array (use greedy match for the full array)
+                json_match = re.search(r"(\[.+\])", json_section, re.DOTALL)
+
+                if json_match:
+                    try:
+                        json_data = json.loads(json_match.group(1))
+                        return {
+                            "status": "success",
+                            "data": json_data,
+                            "row_count": len(json_data) if isinstance(json_data, list) else None,
+                        }
+                    except json.JSONDecodeError as e:
+                        return {
+                            "status": "error",
+                            "message": f"Failed to parse query results: {e}",
+                            "raw_json": json_match.group(1)[:500],
+                        }
+
+            # Fallback: return raw output if markers not found
+            return {
+                "status": "success",
+                "message": "Query executed (no structured output)",
+                "output": output,
+            }
+
         logger.info("Registered DBT tools")
 
     def run(self) -> None:

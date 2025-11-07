@@ -4,5 +4,6 @@ jaffle_shop:
     dev:
       type: duckdb
       path: jaffle_shop.duckdb
+      schema: main
       threads: 4
       

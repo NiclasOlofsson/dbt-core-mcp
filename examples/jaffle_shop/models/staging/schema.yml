@@ -3,7 +3,6 @@ version: 2
 sources:
   - name: jaffle_shop
     description: Raw data from the jaffle shop (using seeds for this example)
-    database: main
     schema: main
     tables:
       - name: customers
