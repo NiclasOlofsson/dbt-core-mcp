@@ -1,1 +1,1 @@
-"""DBT utilities for dbt-core-mcp."""
+"""dbt utilities for dbt-core-mcp."""

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DbtModel:
-    """Represents a DBT model from the manifest."""
+    """Represents a dbt model from the manifest."""
 
     name: str
     unique_id: str
@@ -34,7 +34,7 @@ class DbtModel:
 
 @dataclass
 class DbtSource:
-    """Represents a DBT source from the manifest."""
+    """Represents a dbt source from the manifest."""
 
     name: str
     unique_id: str
@@ -140,6 +140,112 @@ class ManifestLoader:
         logger.debug(f"Found {len(sources)} sources in manifest")
         return sources
 
+    def get_resources(self, resource_type: str | None = None) -> list[dict[str, Any]]:
+        """
+        Get all resources from the manifest, optionally filtered by type.
+
+        Returns simplified resource information across all types (models, sources, seeds, etc.).
+        Designed for LLM consumption with consistent structure across resource types.
+
+        Args:
+            resource_type: Optional filter (model, source, seed, snapshot, test, analysis).
+                          If None, returns all resources.
+
+        Returns:
+            List of resource dictionaries with consistent structure:
+            {
+                "name": str,
+                "unique_id": str,
+                "resource_type": str,
+                "schema": str (if applicable),
+                "database": str (if applicable),
+                "description": str,
+                "tags": list[str],
+                "package_name": str,
+                ...additional type-specific fields
+            }
+
+        Raises:
+            RuntimeError: If manifest not loaded
+            ValueError: If invalid resource_type provided
+        """
+        if not self._manifest:
+            raise RuntimeError("Manifest not loaded. Call load() first.")
+
+        # Validate resource_type if provided
+        valid_types = {"model", "source", "seed", "snapshot", "test", "analysis"}
+        if resource_type is not None and resource_type not in valid_types:
+            raise ValueError(f"Invalid resource_type '{resource_type}'. Must be one of: {', '.join(sorted(valid_types))}")
+
+        resources: list[dict[str, Any]] = []
+
+        # Collect from nodes (models, tests, seeds, snapshots, analyses)
+        nodes = self._manifest.get("nodes", {})
+        for unique_id, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+
+            node_type = node.get("resource_type")
+
+            # Filter by type if specified
+            if resource_type is not None and node_type != resource_type:
+                continue
+
+            # Build consistent resource dict
+            resource: dict[str, Any] = {
+                "name": node.get("name", ""),
+                "unique_id": unique_id,
+                "resource_type": node_type,
+                "package_name": node.get("package_name", ""),
+                "description": node.get("description", ""),
+                "tags": node.get("tags", []),
+            }
+
+            # Add common fields for materialized resources
+            if node_type in ("model", "seed", "snapshot"):
+                resource["schema"] = node.get("schema", "")
+                resource["database"] = node.get("database", "")
+                resource["alias"] = node.get("alias", "")
+
+            # Add type-specific fields
+            if node_type == "model":
+                resource["materialization"] = node.get("config", {}).get("materialized", "")
+                resource["file_path"] = node.get("original_file_path", "")
+            elif node_type == "seed":
+                resource["file_path"] = node.get("original_file_path", "")
+            elif node_type == "snapshot":
+                resource["file_path"] = node.get("original_file_path", "")
+            elif node_type == "test":
+                resource["test_metadata"] = node.get("test_metadata", {})
+                resource["column_name"] = node.get("column_name")
+
+            resources.append(resource)
+
+        # Collect from sources (if not filtered out)
+        if resource_type is None or resource_type == "source":
+            sources = self._manifest.get("sources", {})
+            for unique_id, source in sources.items():
+                if not isinstance(source, dict):
+                    continue
+
+                resource = {
+                    "name": source.get("name", ""),
+                    "unique_id": unique_id,
+                    "resource_type": "source",
+                    "source_name": source.get("source_name", ""),
+                    "schema": source.get("schema", ""),
+                    "database": source.get("database", ""),
+                    "identifier": source.get("identifier", ""),
+                    "package_name": source.get("package_name", ""),
+                    "description": source.get("description", ""),
+                    "tags": source.get("tags", []),
+                }
+
+                resources.append(resource)
+
+        logger.debug(f"Found {len(resources)} resources" + (f" of type '{resource_type}'" if resource_type else ""))
+        return resources
+
     def get_model_by_name(self, name: str) -> DbtModel | None:
         """
         Get a specific model by name.
@@ -227,6 +333,96 @@ class ManifestLoader:
                 return dict(source)  # type cast to satisfy type checker
 
         raise ValueError(f"Source '{source_name}.{table_name}' not found in manifest")
+
+    def get_resource_node(self, name: str, resource_type: str | None = None) -> dict[str, Any]:
+        """
+        Get a resource node by name with auto-detection across all resource types.
+
+        This method searches for resources across models, sources, seeds, snapshots, tests, etc.
+        Designed for LLM consumption - returns all matches when ambiguous rather than raising errors.
+
+        Args:
+            name: Resource name. For sources, can be "source_name.table_name" or just "table_name"
+            resource_type: Optional filter (model, source, seed, snapshot, test, analysis).
+                          If None, searches all types.
+
+        Returns:
+            Single resource dict if exactly one match found, or dict with multiple_matches=True
+            containing all matching resources for LLM to process.
+
+        Raises:
+            RuntimeError: If manifest not loaded
+            ValueError: If resource not found (only case that raises)
+
+        Examples:
+            get_resource_node("customers") -> single model dict
+            get_resource_node("customers", "source") -> single source dict
+            get_resource_node("customers") with multiple matches -> {"multiple_matches": True, ...}
+        """
+        if not self._manifest:
+            raise RuntimeError("Manifest not loaded. Call load() first.")
+
+        # Validate resource_type if provided
+        valid_types = {"model", "source", "seed", "snapshot", "test", "analysis"}
+        if resource_type is not None and resource_type not in valid_types:
+            raise ValueError(f"Invalid resource_type '{resource_type}'. Must be one of: {', '.join(sorted(valid_types))}")
+
+        matches: list[dict[str, Any]] = []
+
+        # For sources, try "source_name.table_name" format first
+        if "." in name and (resource_type is None or resource_type == "source"):
+            parts = name.split(".", 1)
+            if len(parts) == 2:
+                try:
+                    source = self.get_source_node(parts[0], parts[1])
+                    matches.append(source)
+                except ValueError:
+                    pass  # Not a source, continue searching
+
+        # Search nodes (models, tests, snapshots, seeds, analyses, etc.)
+        nodes = self._manifest.get("nodes", {})
+        for unique_id, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+
+            node_type = node.get("resource_type")
+            node_name = node.get("name")
+
+            # Type filter if specified
+            if resource_type is not None and node_type != resource_type:
+                continue
+
+            if node_name == name:
+                matches.append(dict(node))
+
+        # Search sources by table name only (fallback when no dot in name)
+        if resource_type is None or resource_type == "source":
+            sources = self._manifest.get("sources", {})
+            for unique_id, source in sources.items():
+                if not isinstance(source, dict):
+                    continue
+
+                if source.get("name") == name:
+                    # Avoid duplicates if already matched via source_name.table_name
+                    if not any(m.get("unique_id") == unique_id for m in matches):
+                        matches.append(dict(source))
+
+        # Handle results based on match count
+        if len(matches) == 0:
+            type_hint = f" of type '{resource_type}'" if resource_type else ""
+            raise ValueError(f"Resource '{name}'{type_hint} not found in manifest")
+        elif len(matches) == 1:
+            # Single match - return the resource directly
+            return matches[0]
+        else:
+            # Multiple matches - return all with metadata for LLM to process
+            return {
+                "multiple_matches": True,
+                "name": name,
+                "match_count": len(matches),
+                "matches": matches,
+                "message": f"Found {len(matches)} resources named '{name}'. Returning all matches for context.",
+            }
 
     def get_project_info(self) -> dict[str, Any]:
         """

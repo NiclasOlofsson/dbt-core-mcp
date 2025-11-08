@@ -1,7 +1,7 @@
 """
-Bridge Runner for DBT.
+Bridge Runner for dbt.
 
-Executes DBT commands in the user's Python environment via subprocess,
+Executes dbt commands in the user's Python environment via subprocess,
 using an inline Python script to invoke dbtRunner.
 """
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class BridgeRunner:
     """
-    Execute DBT commands in user's environment via subprocess bridge.
+    Execute dbt commands in user's environment via subprocess bridge.
 
     This runner executes DBT using the dbtRunner API within the user's
     Python environment, avoiding version conflicts while still benefiting
@@ -31,10 +31,10 @@ class BridgeRunner:
         Initialize the bridge runner.
 
         Args:
-            project_dir: Path to the DBT project directory
+            project_dir: Path to the dbt project directory
             python_command: Command to run Python in the user's environment
                           (e.g., ['uv', 'run', 'python'] or ['/path/to/venv/bin/python'])
-            timeout: Timeout in seconds for DBT commands (default: None for no timeout)
+            timeout: Timeout in seconds for dbt commands (default: None for no timeout)
         """
         self.project_dir = project_dir.resolve()  # Ensure absolute path
         self.python_command = python_command
@@ -82,22 +82,22 @@ class BridgeRunner:
 
     def invoke(self, args: list[str]) -> DbtRunnerResult:
         """
-        Execute a DBT command via subprocess bridge.
+        Execute a dbt command via subprocess bridge.
 
         Args:
-            args: DBT command arguments (e.g., ['parse'], ['run', '--select', 'model'])
+            args: dbt command arguments (e.g., ['parse'], ['run', '--select', 'model'])
 
         Returns:
             Result of the command execution
         """
-        # Check if DBT is already running and wait for completion
+        # Check if dbt is already running and wait for completion
         if is_dbt_running(self.project_dir):
-            logger.info("DBT process detected, waiting for completion...")
+            logger.info("dbt process detected, waiting for completion...")
             if not wait_for_dbt_completion(self.project_dir, timeout=10.0, poll_interval=0.2):
-                logger.error("Timeout waiting for DBT process to complete")
+                logger.error("Timeout waiting for dbt process to complete")
                 return DbtRunnerResult(
                     success=False,
-                    exception=RuntimeError("DBT is already running in this project. Please wait for it to complete."),
+                    exception=RuntimeError("dbt is already running in this project. Please wait for it to complete."),
                 )
 
         # Build inline Python script to execute dbtRunner
@@ -106,7 +106,7 @@ class BridgeRunner:
         # Execute in user's environment
         full_command = [*self.python_command, "-c", script]
 
-        logger.info(f"Executing DBT command: {args}")
+        logger.info(f"Executing dbt command: {args}")
         logger.info(f"Using Python: {self.python_command}")
         logger.info(f"Working directory: {self.project_dir}")
 
@@ -130,16 +130,16 @@ class BridgeRunner:
                     last_line = result.stdout.strip().split("\n")[-1]
                     output = json.loads(last_line)
                     success = output.get("success", False)
-                    logger.info(f"DBT command {'succeeded' if success else 'failed'}: {args}")
+                    logger.info(f"dbt command {'succeeded' if success else 'failed'}: {args}")
                     return DbtRunnerResult(success=success, stdout=result.stdout, stderr=result.stderr)
                 except (json.JSONDecodeError, IndexError) as e:
                     # If no JSON output, check return code
-                    logger.warning(f"No JSON output from DBT command: {e}. stdout: {result.stdout[:200]}")
+                    logger.warning(f"No JSON output from dbt command: {e}. stdout: {result.stdout[:200]}")
                     return DbtRunnerResult(success=True, stdout=result.stdout, stderr=result.stderr)
             else:
                 # Non-zero return code indicates failure
                 error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
-                logger.error(f"DBT command failed with code {result.returncode}")
+                logger.error(f"dbt command failed with code {result.returncode}")
                 logger.debug(f"stdout: {result.stdout[:500]}")
                 logger.debug(f"stderr: {result.stderr[:500]}")
 
@@ -149,15 +149,15 @@ class BridgeRunner:
 
                 return DbtRunnerResult(
                     success=False,
-                    exception=RuntimeError(f"DBT command failed (exit code {result.returncode}): {error_msg[:500]}"),
+                    exception=RuntimeError(f"dbt command failed (exit code {result.returncode}): {error_msg[:500]}"),
                 )
 
         except subprocess.TimeoutExpired:
-            timeout_msg = f"DBT command timed out after {self.timeout} seconds: {args}"
+            timeout_msg = f"dbt command timed out after {self.timeout} seconds: {args}"
             logger.error(timeout_msg)
-            return DbtRunnerResult(success=False, exception=RuntimeError(f"DBT command timed out after {self.timeout} seconds"))
+            return DbtRunnerResult(success=False, exception=RuntimeError(f"dbt command timed out after {self.timeout} seconds"))
         except Exception as e:
-            logger.exception(f"Error executing DBT command: {e}")
+            logger.exception(f"Error executing dbt command: {e}")
             return DbtRunnerResult(success=False, exception=e)
 
     def get_manifest_path(self) -> Path:
@@ -239,7 +239,7 @@ class BridgeRunner:
         Build inline Python script to execute dbtRunner.
 
         Args:
-            args: DBT command arguments
+            args: dbt command arguments
 
         Returns:
             Python script as string

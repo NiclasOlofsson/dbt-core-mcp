@@ -1,5 +1,5 @@
 """
-Environment detection for DBT projects.
+Environment detection for dbt projects.
 
 Detects the Python environment setup and returns the appropriate command
 to run Python in that environment.
@@ -22,7 +22,7 @@ def detect_python_command(project_dir: Path) -> list[str]:
     needed to run Python in that environment.
 
     Args:
-        project_dir: Path to the DBT project directory
+        project_dir: Path to the dbt project directory
 
     Returns:
         Command prefix to run Python (e.g., ['uv', 'run', 'python'])
@@ -102,10 +102,10 @@ def _get_venv_python(venv_path: Path) -> Path:
 
 def detect_dbt_adapter(project_dir: Path) -> str:
     """
-    Detect the DBT adapter type from profiles.yml.
+    Detect the dbt adapter type from profiles.yml.
 
     Args:
-        project_dir: Path to the DBT project directory
+        project_dir: Path to the dbt project directory
 
     Returns:
         Adapter type (e.g., 'duckdb', 'postgres', 'snowflake')
@@ -143,5 +143,5 @@ def detect_dbt_adapter(project_dir: Path) -> str:
 
     adapter_type = profile["outputs"][target_name]["type"]
 
-    logger.info(f"Detected DBT adapter: {adapter_type}")
+    logger.info(f"Detected dbt adapter: {adapter_type}")
     return str(adapter_type)

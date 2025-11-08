@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Main entry point for the DBT Core MCP Server.
+Main entry point for the dbt Core MCP Server.
 
 This script provides the command-line interface to run the MCP server
-for interacting with DBT projects.
+for interacting with dbt projects.
 """
 
 import argparse
@@ -45,7 +45,7 @@ def setup_logging(debug: bool = False) -> None:
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
 
-        print(f"[DBT Core MCP] Log file: {log_path}", file=sys.stderr)
+        print(f"[dbt Core MCP] Log file: {log_path}", file=sys.stderr)
     except Exception:
         pass
 
@@ -55,7 +55,7 @@ def parse_arguments() -> argparse.Namespace:
     from . import __version__
 
     parser = argparse.ArgumentParser(
-        description="DBT Core MCP Server - Interact with DBT projects via MCP",
+        description="dbt Core MCP Server - Interact with dbt projects via MCP",
         prog="dbt-core-mcp",
     )
 
@@ -64,14 +64,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--project-dir",
         type=str,
-        help="Optional: Path to DBT project directory (auto-detects from workspace if not provided)",
+        help="Optional: Path to dbt project directory (auto-detects from workspace if not provided)",
     )
 
     parser.add_argument(
         "--dbt-command-timeout",
         type=float,
         default=None,
-        help="Timeout in seconds for DBT commands (default: None for no timeout; 0 or negative values also mean no timeout)",
+        help="Timeout in seconds for dbt commands (default: None for no timeout; 0 or negative values also mean no timeout)",
     )
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

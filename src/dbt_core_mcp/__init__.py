@@ -1,7 +1,7 @@
 """
-DBT Core MCP Server.
+dbt Core MCP Server.
 
-This package provides an MCP server for interacting with DBT projects
+This package provides an MCP server for interacting with dbt projects
 via the Model Context Protocol.
 """
 

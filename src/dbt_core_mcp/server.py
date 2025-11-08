@@ -1,7 +1,7 @@
 """
-DBT Core MCP Server Implementation.
+dbt Core MCP Server Implementation.
 
-This server provides tools for interacting with DBT projects via the Model Context Protocol.
+This server provides tools for interacting with dbt projects via the Model Context Protocol.
 """
 
 import json
@@ -26,40 +26,40 @@ from .utils.env_detector import detect_dbt_adapter, detect_python_command
 logger = logging.getLogger(__name__)
 
 
-class DBTCoreMCPServer:
+class DbtCoreMcpServer:
     """
-    DBT Core MCP Server.
+    dbt Core MCP Server.
 
-    Provides tools for interacting with DBT projects.
+    Provides tools for interacting with dbt projects.
     """
 
     def __init__(self, project_dir: Optional[str] = None, timeout: Optional[float] = None) -> None:
         """Initialize the server.
 
         Args:
-            project_dir: Optional path to DBT project directory. If not provided,
+            project_dir: Optional path to dbt project directory. If not provided,
                         automatically detects from MCP workspace roots or falls back to cwd.
-            timeout: Optional timeout in seconds for DBT commands (default: None for no timeout).
+            timeout: Optional timeout in seconds for dbt commands (default: None for no timeout).
         """
         # FastMCP initialization with recommended arguments
         from . import __version__
 
         self.app = FastMCP(
             version=__version__,
-            name="DBT Core MCP",
-            instructions="""DBT Core MCP Server for interacting with DBT projects.
+            name="dbt Core MCP",
+            instructions="""dbt Core MCP Server for interacting with dbt projects.
 
             This server provides tools to:
-            - Query DBT project metadata
-            - Run DBT commands
+            - Query dbt project metadata
+            - Run dbt commands
             - Inspect models, sources, and tests
             - View compiled SQL
-            - Access DBT documentation
+            - Access dbt documentation
 
             Usage:
-            - Use the tools to interact with your DBT project
+            - Use the tools to interact with your dbt project
             - Query model lineage and dependencies
-            - Run and test DBT models
+            - Run and test dbt models
             """,
             on_duplicate_resources="warn",
             on_duplicate_prompts="replace",
@@ -72,7 +72,7 @@ class DBTCoreMCPServer:
         self.profiles_dir = os.path.expanduser("~/.dbt")
         self.timeout = timeout
 
-        # Initialize DBT components (lazy-loaded)
+        # Initialize dbt components (lazy-loaded)
         self.runner: BridgeRunner | None = None
         self.manifest: ManifestLoader | None = None
         self.adapter_type: str | None = None
@@ -87,11 +87,11 @@ class DBTCoreMCPServer:
         # Register tools
         self._register_tools()
 
-        logger.info("DBT Core MCP Server initialized")
+        logger.info("dbt Core MCP Server initialized")
         logger.info(f"Profiles directory: {self.profiles_dir}")
 
     def _detect_project_dir(self) -> Path:
-        """Detect the DBT project directory.
+        """Detect the dbt project directory.
 
         Resolution order:
         1. Use explicit project_dir if provided during initialization
@@ -101,7 +101,7 @@ class DBTCoreMCPServer:
         which is called asynchronously from tool contexts.
 
         Returns:
-            Path to the DBT project directory
+            Path to the dbt project directory
         """
         # Use explicit project_dir if provided
         if self._explicit_project_dir:
@@ -215,7 +215,7 @@ class DBTCoreMCPServer:
         return False
 
     def _initialize_dbt_components(self, force: bool = False) -> None:
-        """Initialize DBT runner and manifest loader.
+        """Initialize dbt runner and manifest loader.
 
         Args:
             force: If True, always re-parse. If False, only parse if stale.
@@ -229,7 +229,7 @@ class DBTCoreMCPServer:
             python_cmd = detect_python_command(self.project_dir)
             logger.info(f"Detected Python command: {python_cmd}")
 
-            # Detect DBT adapter type
+            # Detect dbt adapter type
             self.adapter_type = detect_dbt_adapter(self.project_dir)
             logger.info(f"Detected adapter: {self.adapter_type}")
 
@@ -245,7 +245,7 @@ class DBTCoreMCPServer:
             result = self.runner.invoke(["parse"])
             if not result.success:
                 error_msg = str(result.exception) if result.exception else "Unknown error"
-                raise RuntimeError(f"Failed to parse DBT project: {error_msg}")
+                raise RuntimeError(f"Failed to parse dbt project: {error_msg}")
 
         # Initialize or reload manifest loader
         manifest_path = self.runner.get_manifest_path()
@@ -254,10 +254,10 @@ class DBTCoreMCPServer:
         self.manifest.load()
 
         self._initialized = True
-        logger.info("DBT components initialized successfully")
+        logger.info("dbt components initialized successfully")
 
     def _ensure_initialized(self) -> None:
-        """Ensure DBT components are initialized before use.
+        """Ensure dbt components are initialized before use.
 
         On first call, detects project directory from explicit path or cwd.
         If no explicit path was provided and workspace root detection is needed,
@@ -267,14 +267,14 @@ class DBTCoreMCPServer:
             # Detect project directory on first use
             if not self.project_dir:
                 self.project_dir = self._detect_project_dir()
-                logger.info(f"DBT project directory: {self.project_dir}")
+                logger.info(f"dbt project directory: {self.project_dir}")
 
             if not self.project_dir:
-                raise RuntimeError("DBT project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
+                raise RuntimeError("dbt project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
             self._initialize_dbt_components()
 
     async def _ensure_initialized_with_context(self, ctx: Any) -> None:
-        """Ensure DBT components are initialized, with optional workspace root detection.
+        """Ensure dbt components are initialized, with optional workspace root detection.
 
         Args:
             ctx: FastMCP Context for accessing workspace roots
@@ -289,10 +289,10 @@ class DBTCoreMCPServer:
             # Fall back to basic detection if needed
             if not self.project_dir:
                 self.project_dir = self._detect_project_dir()
-                logger.info(f"DBT project directory: {self.project_dir}")
+                logger.info(f"dbt project directory: {self.project_dir}")
 
             if not self.project_dir:
-                raise RuntimeError("DBT project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
+                raise RuntimeError("dbt project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
             self._initialize_dbt_components()
 
     def _parse_run_results(self) -> dict[str, Any]:
@@ -467,11 +467,11 @@ class DBTCoreMCPServer:
         return sorted(columns)
 
     def _register_tools(self) -> None:
-        """Register all DBT tools."""
+        """Register all dbt tools."""
 
         @self.app.tool()
         async def get_project_info(ctx: Context) -> dict[str, Any]:
-            """Get information about the DBT project.
+            """Get information about the dbt project.
 
             Returns:
                 Dictionary with project information
@@ -489,7 +489,7 @@ class DBTCoreMCPServer:
 
         @self.app.tool()
         def list_models() -> list[dict[str, Any]]:
-            """List all models in the DBT project.
+            """List all models in the dbt project.
 
             Returns:
                 List of model information dictionaries
@@ -516,7 +516,7 @@ class DBTCoreMCPServer:
 
         @self.app.tool()
         def get_model_info(name: str, include_database_schema: bool = True) -> dict[str, Any]:
-            """Get detailed information about a specific DBT model.
+            """Get detailed information about a specific dbt model.
 
             Returns the complete manifest node for a model, including all metadata,
             columns, configuration, dependencies, and more. Excludes raw_code to keep
@@ -553,7 +553,7 @@ class DBTCoreMCPServer:
 
         @self.app.tool()
         def list_sources() -> list[dict[str, Any]]:
-            """List all sources in the DBT project.
+            """List all sources in the dbt project.
 
             Returns:
                 List of source information dictionaries
@@ -577,8 +577,39 @@ class DBTCoreMCPServer:
             ]
 
         @self.app.tool()
+        def list_resources(resource_type: str | None = None) -> list[dict[str, Any]]:
+            """List all resources in the dbt project with optional filtering by type.
+
+            This unified tool provides a consistent view across all dbt resource types.
+            Returns simplified resource information optimized for LLM consumption.
+
+            Args:
+                resource_type: Optional filter to narrow results:
+                    - "model": Data transformation models
+                    - "source": External data sources
+                    - "seed": CSV reference data files
+                    - "snapshot": SCD Type 2 historical tables
+                    - "test": Data quality tests
+                    - "analysis": Ad-hoc analysis queries
+                    - None: Return all resources (default)
+
+            Returns:
+                List of resource dictionaries with consistent structure across types.
+                Each resource includes: name, unique_id, resource_type, description, tags, etc.
+
+            Examples:
+                list_resources() -> all resources
+                list_resources("model") -> only models
+                list_resources("source") -> only sources
+                list_resources("test") -> only tests
+            """
+            self._ensure_initialized()
+
+            return self.manifest.get_resources(resource_type)  # type: ignore
+
+        @self.app.tool()
         def get_source_info(source_name: str, table_name: str) -> dict[str, Any]:
-            """Get detailed information about a specific DBT source.
+            """Get detailed information about a specific dbt source.
 
             Returns the complete manifest source node, including all metadata,
             columns, freshness configuration, etc.
@@ -599,8 +630,70 @@ class DBTCoreMCPServer:
                 raise ValueError(f"Source not found: {e}")
 
         @self.app.tool()
+        def get_resource_info(name: str, resource_type: str | None = None, include_database_schema: bool = True) -> dict[str, Any]:
+            """Get detailed information about any dbt resource (model, source, seed, snapshot, test, etc.).
+
+            This unified tool works across all resource types, auto-detecting the resource or filtering by type.
+            Designed for LLM consumption - returns complete data even when multiple matches exist.
+
+            Args:
+                name: Resource name. For sources, use "source_name.table_name" or just "table_name"
+                resource_type: Optional filter to narrow search:
+                    - "model": Data transformation models
+                    - "source": External data sources
+                    - "seed": CSV reference data files
+                    - "snapshot": SCD Type 2 historical tables
+                    - "test": Data quality tests
+                    - "analysis": Ad-hoc analysis queries
+                    - None: Auto-detect (searches all types)
+                include_database_schema: If True (default), query actual database table schema
+                    for models/seeds/snapshots and add as 'database_columns' field
+
+            Returns:
+                Resource information dictionary. If multiple matches found, returns:
+                {"multiple_matches": True, "matches": [...], "message": "..."}
+
+            Raises:
+                ValueError: If resource not found
+
+            Examples:
+                get_resource_info("customers") -> auto-detect model or source
+                get_resource_info("customers", "model") -> get model only
+                get_resource_info("jaffle_shop.customers", "source") -> specific source
+                get_resource_info("test_unique_customers") -> find test
+            """
+            self._ensure_initialized()
+
+            try:
+                result = self.manifest.get_resource_node(name, resource_type)  # type: ignore
+
+                # Handle multiple matches case
+                if isinstance(result, dict) and result.get("multiple_matches"):
+                    return result
+
+                # Single match - enrich with database schema if requested
+                node_type = result.get("resource_type")
+
+                # Remove heavy fields to keep context lightweight
+                result_copy = dict(result)
+                result_copy.pop("raw_code", None)
+                result_copy.pop("compiled_code", None)
+
+                # Query database schema for applicable resource types
+                if include_database_schema and node_type in ("model", "seed", "snapshot"):
+                    resource_name = result.get("name", name)
+                    schema = self._get_table_schema_from_db(resource_name)
+                    if schema:
+                        result_copy["database_columns"] = schema
+
+                return result_copy
+
+            except ValueError as e:
+                raise ValueError(f"Resource not found: {e}")
+
+        @self.app.tool()
         def get_compiled_sql(name: str, force: bool = False) -> dict[str, Any]:
-            """Get the compiled SQL for a specific DBT model.
+            """Get the compiled SQL for a specific dbt model.
 
             Returns the fully compiled SQL with all Jinja templating rendered
             ({{ ref() }}, {{ source() }}, etc. resolved to actual table names).
@@ -655,7 +748,7 @@ class DBTCoreMCPServer:
 
         @self.app.tool()
         def query_database(sql: str, limit: int | None = None) -> dict[str, Any]:
-            """Execute a SQL query against the DBT project's database.
+            """Execute a SQL query against the dbt project's database.
 
             Uses dbt show --inline to execute queries with full Jinja templating support.
             Supports {{ ref('model_name') }} and {{ source('source_name', 'table_name') }}.
@@ -735,14 +828,14 @@ class DBTCoreMCPServer:
             fail_fast: bool = False,
             check_schema_changes: bool = False,
         ) -> dict[str, Any]:
-            """Run DBT models (compile SQL and execute against database).
+            """Run dbt models (compile SQL and execute against database).
 
             Smart selection modes for developers:
             - modified_only: Run only models that changed since last successful run
             - modified_downstream: Run changed models + all downstream dependencies
 
             Manual selection (if not using smart modes):
-            - select: DBT selector syntax (e.g., "customers", "tag:mart", "stg_*")
+            - select: dbt selector syntax (e.g., "customers", "tag:mart", "stg_*")
             - exclude: Exclude specific models
 
             Args:
@@ -845,7 +938,7 @@ class DBTCoreMCPServer:
                             pre_run_columns[model_name] = []
 
             # Execute
-            logger.info(f"Running DBT models with args: {args}")
+            logger.info(f"Running dbt models with args: {args}")
             result = self.runner.invoke(args)  # type: ignore
 
             if not result.success:
@@ -910,14 +1003,14 @@ class DBTCoreMCPServer:
             modified_downstream: bool = False,
             fail_fast: bool = False,
         ) -> dict[str, Any]:
-            """Run DBT tests on models and sources.
+            """Run dbt tests on models and sources.
 
             Smart selection modes for developers:
             - modified_only: Test only models that changed since last successful run
             - modified_downstream: Test changed models + all downstream dependencies
 
             Manual selection (if not using smart modes):
-            - select: DBT selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
+            - select: dbt selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
             - exclude: Exclude specific tests
 
             Args:
@@ -965,7 +1058,7 @@ class DBTCoreMCPServer:
                 args.append("--fail-fast")
 
             # Execute
-            logger.info(f"Running DBT tests with args: {args}")
+            logger.info(f"Running dbt tests with args: {args}")
             result = self.runner.invoke(args)  # type: ignore
 
             if not result.success:
@@ -1002,7 +1095,7 @@ class DBTCoreMCPServer:
             - modified_downstream: Build changed models + all downstream dependencies
 
             Manual selection (if not using smart modes):
-            - select: DBT selector syntax (e.g., "customers", "tag:mart", "stg_*")
+            - select: dbt selector syntax (e.g., "customers", "tag:mart", "stg_*")
             - exclude: Exclude specific models
 
             Args:
@@ -1099,7 +1192,7 @@ class DBTCoreMCPServer:
             - modified_downstream: Load changed seeds + all downstream dependencies
 
             Manual selection (if not using smart modes):
-            - select: DBT selector syntax (e.g., "raw_customers", "tag:lookup")
+            - select: dbt selector syntax (e.g., "raw_customers", "tag:lookup")
             - exclude: Exclude specific seeds
 
             Important: Change detection for seeds works via file hash comparison:
@@ -1503,7 +1596,7 @@ class DBTCoreMCPServer:
             select: str | None = None,
             exclude: str | None = None,
         ) -> dict[str, Any]:
-            """Execute DBT snapshots to capture slowly changing dimensions (SCD Type 2).
+            """Execute dbt snapshots to capture slowly changing dimensions (SCD Type 2).
 
             Snapshots track historical changes over time by recording:
             - When records were first seen (valid_from)
@@ -1514,7 +1607,7 @@ class DBTCoreMCPServer:
             (e.g., daily or hourly), not during interactive development.
 
             Args:
-                select: DBT selector syntax (e.g., "snapshot_name", "tag:daily")
+                select: dbt selector syntax (e.g., "snapshot_name", "tag:daily")
                 exclude: Exclude specific snapshots
 
             Returns:
@@ -1561,23 +1654,23 @@ class DBTCoreMCPServer:
                 "elapsed_time": run_results.get("elapsed_time"),
             }
 
-        logger.info("Registered DBT tools")
+        logger.info("Registered dbt tools")
 
     def run(self) -> None:
         """Run the MCP server."""
         self.app.run(show_banner=False)
 
 
-def create_server(project_dir: Optional[str] = None, timeout: Optional[float] = None) -> DBTCoreMCPServer:
-    """Create a new DBT Core MCP server instance.
+def create_server(project_dir: Optional[str] = None, timeout: Optional[float] = None) -> DbtCoreMcpServer:
+    """Create a new dbt Core MCP server instance.
 
     Args:
-        project_dir: Optional path to DBT project directory.
+        project_dir: Optional path to dbt project directory.
                      If not provided, automatically detects from MCP workspace roots
                      or falls back to current working directory.
-        timeout: Optional timeout in seconds for DBT commands (default: None for no timeout).
+        timeout: Optional timeout in seconds for dbt commands (default: None for no timeout).
 
     Returns:
-        DBTCoreMCPServer instance
+        DbtCoreMcpServer instance
     """
-    return DBTCoreMCPServer(project_dir=project_dir, timeout=timeout)
+    return DbtCoreMcpServer(project_dir=project_dir, timeout=timeout)

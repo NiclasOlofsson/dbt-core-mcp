@@ -11,13 +11,13 @@ from dbt_core_mcp.utils.process_check import is_dbt_running, wait_for_dbt_comple
 
 
 def test_is_dbt_running_no_process(tmp_path: Path) -> None:
-    """Test that is_dbt_running returns False when no DBT process exists."""
+    """Test that is_dbt_running returns False when no dbt process exists."""
     result = is_dbt_running(tmp_path)
     assert result is False
 
 
 def test_wait_for_dbt_completion_no_process(tmp_path: Path) -> None:
-    """Test that wait_for_dbt_completion returns immediately when no DBT process exists."""
+    """Test that wait_for_dbt_completion returns immediately when no dbt process exists."""
     start = time.time()
     result = wait_for_dbt_completion(tmp_path, timeout=5.0, poll_interval=0.1)
     elapsed = time.time() - start
@@ -28,7 +28,7 @@ def test_wait_for_dbt_completion_no_process(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not Path("examples/jaffle_shop").exists(), reason="Requires jaffle_shop example")
 def test_is_dbt_running_with_actual_process() -> None:
-    """Test detecting an actual DBT process (integration test)."""
+    """Test detecting an actual dbt process (integration test)."""
     project_dir = Path("examples/jaffle_shop").resolve()
 
     # Start a long-running dbt command in background

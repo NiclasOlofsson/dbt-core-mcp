@@ -1,5 +1,5 @@
 """
-Pytest configuration and fixtures for DBT Core MCP tests.
+Pytest configuration and fixtures for dbt Core MCP tests.
 """
 
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def sample_project_dir(tmp_path: Path) -> str:
-    """Create a temporary DBT project directory for testing."""
+    """Create a temporary dbt project directory for testing."""
     project_dir = tmp_path / "test_project"
     project_dir.mkdir()
 
@@ -62,3 +62,17 @@ test_profile:
 """)
 
     return str(profiles_dir)
+
+
+@pytest.fixture
+def jaffle_shop_server():
+    """Create a server instance with the jaffle_shop example project."""
+    from pathlib import Path
+
+    from dbt_core_mcp.server import create_server
+
+    # Use the example jaffle_shop project
+    project_dir = Path(__file__).parent.parent / "examples" / "jaffle_shop"
+    server = create_server(str(project_dir))
+    server._ensure_initialized()  # pyright: ignore[reportPrivateUsage]
+    return server

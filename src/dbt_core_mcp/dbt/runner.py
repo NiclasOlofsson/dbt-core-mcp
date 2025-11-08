@@ -1,7 +1,7 @@
 """
 DBT Runner Protocol.
 
-Defines the interface for running DBT commands, supporting both in-process
+Defines the interface for running dbt commands, supporting both in-process
 and subprocess execution.
 """
 
@@ -10,11 +10,11 @@ from typing import Protocol
 
 
 class DbtRunnerResult:
-    """Result from a DBT command execution."""
+    """Result from a dbt command execution."""
 
     def __init__(self, success: bool, exception: Exception | None = None, stdout: str = "", stderr: str = ""):
         """
-        Initialize a DBT runner result.
+        Initialize a dbt runner result.
 
         Args:
             success: Whether the command succeeded
@@ -29,14 +29,14 @@ class DbtRunnerResult:
 
 
 class DbtRunner(Protocol):
-    """Protocol for DBT command execution."""
+    """Protocol for dbt command execution."""
 
     def invoke(self, args: list[str]) -> DbtRunnerResult:
         """
-        Execute a DBT command.
+        Execute a dbt command.
 
         Args:
-            args: DBT command arguments (e.g., ['parse'], ['run', '--select', 'model'])
+            args: dbt command arguments (e.g., ['parse'], ['run', '--select', 'model'])
 
         Returns:
             Result of the command execution

@@ -1,5 +1,5 @@
 """
-Basic integration test for DBT Core MCP server.
+Basic integration test for dbt Core MCP server.
 """
 
 from dbt_core_mcp.server import create_server
