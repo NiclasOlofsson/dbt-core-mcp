@@ -13,12 +13,14 @@ Meet your new dbt pair programmer - the one who actually understands your enviro
 If you've tried other dbt tools with Copilot (dbt power user, datamate, etc.), you know the pain:
 - They don't respect your Python environment
 - They can't see your actual project structure
+- They fail when adapters are missing from THEIR environment
 - You end up doing the work yourself anyway
 
 **dbt-core-mcp is different.** It's not just another plugin - it's a true pair programming partner that:
 
+- **Zero dbt Dependencies**: Our server needs NO dbt-core, NO adapters - works with YOUR environment
 - **Stays in Flow**: Keep the conversation going with Copilot while it handles dbt commands, runs tests, and analyzes impact
-- **Respects Your Environment**: Works with your exact dbt version, your adapter, your Python setup (uv, poetry, venv, conda - whatever you use)
+- **Respects Your Environment**: Detects and uses YOUR exact dbt version, YOUR adapter, YOUR Python setup (uv, poetry, venv, conda)
 - **Actually Helps**: Instead of generic suggestions, you get real work done - "run my changes and test downstream" actually does it
 - **Knows Your Project**: Full access to your models, lineage, sources, and compiled SQL - no guessing, no manual lookups
 
@@ -40,13 +42,15 @@ If you've tried other dbt tools with Copilot (dbt power user, datamate, etc.), y
 
 ## What You Get (Features & Benefits)
 
+- **🔥 Zero dbt Dependencies**: Server has NO dbt-core, NO adapters - ultimate environment respect
 - **Natural Language Control**: Just talk - "run my changes and test downstream" actually works
-- **Environment Respect**: Uses your exact dbt version, adapter, and Python environment (uv, poetry, venv, conda)
+- **Bridge Execution**: Automatically detects YOUR environment and runs dbt with YOUR versions
+- **Works with ANY Adapter**: duckdb, snowflake, postgres, bigquery, databricks - if you have it, we work with it
 - **Smart Selection**: Automatic change detection - run only what changed, or changed + downstream
 - **Full Project Awareness**: Lineage analysis, impact assessment, compiled SQL - instant access to everything
 - **True Pair Programming**: Stay in conversation with Copilot while it executes dbt commands and reports results
 - **Schema Change Detection**: Automatically detects column changes and recommends downstream updates
-- **No Configuration Needed**: Works with your existing dbt setup - any adapter, any database
+- **No Configuration Needed**: Works with your existing dbt setup - any adapter, any database, any version
 - **Concurrency Safe**: Detects and waits for existing dbt processes to prevent conflicts
 
 This server provides tools to interact with dbt projects via the Model Context Protocol, enabling AI assistants to:
@@ -199,9 +203,15 @@ The server automatically detects your dbt project from the workspace root. If yo
 
 ## Requirements
 
-- **dbt Core**: Version 1.9.0 or higher
-- **Python**: 3.9 or higher
-- **Supported Adapters**: Any dbt adapter (dbt-duckdb, dbt-postgres, dbt-snowflake, etc.)
+**For the MCP Server:**
+- Python 3.9 or higher
+- NO dbt-core required, NO adapters required - just install `dbt-core-mcp`
+
+**For Your dbt Project:**
+- dbt Core 1.9.0 or higher
+- Any dbt adapter (dbt-duckdb, dbt-postgres, dbt-snowflake, dbt-databricks, etc.)
+
+The server automatically detects and uses YOUR project's dbt installation via bridge execution.
 
 ## Limitations
 
@@ -366,17 +376,6 @@ Get the fully compiled SQL for a model with all Jinja templating resolved to act
 **Parameters:**
 - `name`: Model name
 - `force`: Force recompilation even if cached (default: false)
-
-#### `refresh_manifest`
-Update the dbt manifest by running `dbt parse`. Use after making changes to model files.
-
->&nbsp;  
->You: *"Refresh the dbt manifest"*  
->Copilot: *Runs dbt parse and updates manifest.json*
->
->You: *"Parse the dbt project to pick up my changes"*  
->Copilot: *Parses project and reports new/changed models*  
->&nbsp;
 
 #### `query_database`
 Execute SQL queries against your database using dbt's ref() and source() functions.
@@ -563,23 +562,26 @@ The first run establishes a baseline state automatically. Subsequent runs detect
 
 ## How It Works
 
-This server executes dbt commands in your project's Python environment:
+This server executes dbt commands in your project's Python environment using a bridge execution pattern:
 
-1. **Environment Detection**: Automatically finds your Python environment (uv, poetry, venv, conda, etc.)
-2. **Bridge Execution**: Runs dbt commands using your exact dbt Core version and adapter
-3. **No Conflicts**: Uses subprocess execution to avoid version conflicts with the MCP server
-4. **Concurrency Safety**: Detects and waits for existing dbt processes to prevent database lock conflicts
+1. **Zero dbt Dependencies**: MCP server requires NO dbt-core, NO adapters - just Python utilities
+2. **Environment Detection**: Automatically finds your Python environment (uv, poetry, venv, conda, etc.)
+3. **Bridge Execution**: Builds Python scripts as strings and executes them in YOUR environment
+4. **Uses YOUR dbt**: Runs with YOUR dbt-core version, YOUR adapters, YOUR configuration
+5. **No Conflicts**: Can't have version conflicts when we don't have dbt dependencies!
+6. **Concurrency Safety**: Detects and waits for existing dbt processes to prevent database lock conflicts
 
-The server reads dbt's manifest.json for metadata and uses `dbt show --inline` for SQL query execution with full Jinja templating support.
+The server reads dbt's manifest.json for metadata and uses `dbt show --inline` (executed in YOUR environment) for SQL query execution with full Jinja templating support.
 
 **In practice:**
 
 >&nbsp;  
->You: *"Show me 10 rows from the customers model"*  
->Copilot detects your environment → compiles `{{ ref('customers') }}` → executes query → returns results  
+>**Your project:** dbt-core 1.10.13 + dbt-duckdb  
+>**Our server:** mcp, fastmcp, pydantic, pyyaml, psutil (no dbt!)  
+>**Result:** Perfect compatibility - we detect your environment and run YOUR dbt  
 >&nbsp;
 
-No configuration needed - it just works with your existing dbt setup.
+No configuration needed - it just works with your existing dbt setup, any version, any adapter.
 
 ## Contributing
 

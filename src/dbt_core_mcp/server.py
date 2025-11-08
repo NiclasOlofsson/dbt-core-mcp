@@ -654,34 +654,6 @@ class DBTCoreMCPServer:
                 raise RuntimeError(f"Failed to get compiled SQL: {e}")
 
         @self.app.tool()
-        def refresh_manifest(force: bool = True) -> dict[str, object]:
-            """Refresh the DBT manifest by running dbt parse.
-
-            Args:
-                force: If True, always re-parse. If False, only parse if stale.
-
-            Returns:
-                Status of the refresh operation
-            """
-            if not self.project_dir:
-                raise RuntimeError("DBT project directory not set")
-
-            try:
-                self._initialize_dbt_components(force=force)
-                return {
-                    "status": "success",
-                    "message": "Manifest refreshed successfully",
-                    "project_name": self.manifest.get_project_info()["project_name"] if self.manifest else None,
-                    "model_count": len(self.manifest.get_models()) if self.manifest else 0,
-                    "source_count": len(self.manifest.get_sources()) if self.manifest else 0,
-                }
-            except Exception as e:
-                return {
-                    "status": "error",
-                    "message": f"Failed to refresh manifest: {str(e)}",
-                }
-
-        @self.app.tool()
         def query_database(sql: str, limit: int | None = None) -> dict[str, object]:
             """Execute a SQL query against the DBT project's database.
 
