@@ -10,9 +10,17 @@ if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
-async def test_run_models_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+@pytest.fixture
+async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
+    """Jaffle shop server with seeds already loaded."""
+    # Load seeds first since models depend on them
+    await jaffle_shop_server.toolImpl_seed_data()
+    return jaffle_shop_server
+
+
+async def test_run_models_all(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test running all models."""
-    result = await jaffle_shop_server.toolImpl_run_models()
+    result = await seeded_jaffle_shop_server.toolImpl_run_models()
 
     assert result["status"] == "success"
     assert "results" in result
@@ -21,9 +29,9 @@ async def test_run_models_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     assert len(result["results"]) > 0
 
 
-async def test_run_models_select_specific(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_run_models_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test running a specific model."""
-    result = await jaffle_shop_server.toolImpl_run_models(select="customers")
+    result = await seeded_jaffle_shop_server.toolImpl_run_models(select="customers")
 
     assert result["status"] == "success"
     assert "results" in result
@@ -53,18 +61,18 @@ async def test_run_models_modified_only_no_state(jaffle_shop_server: "DbtCoreMcp
     assert "No previous run state found" in result["message"]
 
 
-async def test_run_models_creates_state(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_run_models_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that successful run creates state for next modified run."""
     # Clean state first
-    assert jaffle_shop_server.project_dir is not None
-    state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
+    assert seeded_jaffle_shop_server.project_dir is not None
+    state_dir = seeded_jaffle_shop_server.project_dir / "target" / "state_last_run"
     if state_dir.exists():
         import shutil
 
         shutil.rmtree(state_dir)
 
     # Run models
-    result = await jaffle_shop_server.toolImpl_run_models()
+    result = await seeded_jaffle_shop_server.toolImpl_run_models()
 
     assert result["status"] == "success"
     # State should be created
@@ -72,9 +80,9 @@ async def test_run_models_creates_state(jaffle_shop_server: "DbtCoreMcpServer") 
     assert (state_dir / "manifest.json").exists()
 
 
-async def test_run_models_full_refresh(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_run_models_full_refresh(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test run with full_refresh flag."""
-    result = await jaffle_shop_server.toolImpl_run_models(full_refresh=True)
+    result = await seeded_jaffle_shop_server.toolImpl_run_models(full_refresh=True)
 
     assert result["status"] == "success"
     assert "--full-refresh" in result["command"]
