@@ -292,7 +292,7 @@ def test_analyze_impact_distance_grouping(jaffle_shop_server: "DbtCoreMcpServer"
     assert "1" in result["affected_by_distance"]
 
     # Each distance group should have resources
-    for distance, resources in result["affected_by_distance"].items():
+    for _distance, resources in result["affected_by_distance"].items():
         assert len(resources) > 0
         assert all("distance" in r for r in resources)
 
