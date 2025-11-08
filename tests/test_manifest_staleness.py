@@ -27,7 +27,7 @@ async def test_manifest_not_stale_when_exists_and_fresh() -> None:
     assert manifest_path.exists(), "Test requires existing manifest in jaffle_shop"
 
     # Check staleness - should be False since manifest exists and is fresh
-    is_stale = server._is_manifest_stale()
+    is_stale = server._is_manifest_stale()  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
     # This should be False, but currently returns True due to the bug!
     assert not is_stale, "Manifest should not be stale when it exists and is fresh"
@@ -44,7 +44,7 @@ async def test_manifest_stale_when_missing() -> None:
 
     # Mock manifest path to simulate it doesn't exist
     with patch.object(Path, "exists", return_value=False):
-        is_stale = server._is_manifest_stale()
+        is_stale = server._is_manifest_stale()  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
         assert is_stale, "Manifest should be stale when it doesn't exist"
 
 
@@ -82,7 +82,7 @@ model-paths: ["models"]
     server.runner = MagicMock()
 
     # Check staleness - should be True since project file is newer
-    is_stale = server._is_manifest_stale()
+    is_stale = server._is_manifest_stale()  # pyright: ignore[reportPrivateUsage]
     assert is_stale, "Manifest should be stale when dbt_project.yml is newer"
 
 
@@ -126,7 +126,7 @@ model-paths: ["models"]
     server.runner = MagicMock()
 
     # Check staleness - should be True since model file is newer
-    is_stale = server._is_manifest_stale()
+    is_stale = server._is_manifest_stale()  # pyright: ignore[reportPrivateUsage]
     assert is_stale, "Manifest should be stale when model file is newer"
 
 
@@ -155,20 +155,20 @@ async def test_staleness_check_before_runner_initialized() -> None:
     parse_called = False
     original_invoke = None
 
-    async def track_invoke(args: list[str]):
+    async def track_invoke(args: list[str]):  # pyright: ignore[reportUnknownParameterType]
         nonlocal parse_called
         if args == ["parse"] or (len(args) > 0 and args[0] == "parse"):
             parse_called = True
         # Call original if it exists
         if original_invoke:
-            return await original_invoke(args)
+            return await original_invoke(args)  # pyright: ignore[reportGeneralTypeIssues]
         from dbt_core_mcp.dbt.runner import DbtRunnerResult
 
         return DbtRunnerResult(success=True)
 
     # Patch the BridgeRunner.invoke method before initialization
     with patch("dbt_core_mcp.dbt.bridge_runner.BridgeRunner.invoke", new=track_invoke):
-        await server._ensure_initialized_with_context(None)
+        await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
 
     # Get manifest timestamp after initialization
     manifest_mtime_after = manifest_path.stat().st_mtime
@@ -202,7 +202,7 @@ async def test_staleness_check_independent_of_runner_state() -> None:
     assert server.runner is None, "Runner should be None before initialization"
 
     # After fix: this should check timestamps even when runner is None
-    is_stale = server._is_manifest_stale()
+    is_stale = server._is_manifest_stale()  # pyright: ignore[reportPrivateUsage]
 
     # Should return False because manifest exists and is fresh
     assert is_stale is False, "Should return False when manifest is fresh, regardless of runner state"
@@ -267,7 +267,7 @@ test_profile:
     # First initialization - manifest is fresh, should NOT parse
     with patch("dbt_core_mcp.dbt.bridge_runner.BridgeRunner.invoke", new_callable=AsyncMock) as mock:
         mock.side_effect = mock_invoke
-        await server._ensure_initialized_with_context(None)
+        await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
         assert parse_count == 0, "Should not parse when manifest is fresh"
 
     # Now touch the model file to make it newer than manifest
@@ -281,7 +281,7 @@ test_profile:
     # Second initialization - file changed, SHOULD parse
     with patch("dbt_core_mcp.dbt.bridge_runner.BridgeRunner.invoke", new_callable=AsyncMock) as mock:
         mock.side_effect = mock_invoke
-        await server._ensure_initialized_with_context(None)
+        await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
         assert parse_count == 1, "Should parse when model file is newer than manifest"
 
 
@@ -342,11 +342,11 @@ test_profile:
     # First initialization - manifest is fresh, should NOT parse
     with patch("dbt_core_mcp.dbt.bridge_runner.BridgeRunner.invoke", new_callable=AsyncMock) as mock:
         mock.side_effect = mock_invoke
-        await server._ensure_initialized_with_context(None)
+        await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
         initial_count = parse_count
 
     # Second call without any changes - should NOT parse again
     with patch("dbt_core_mcp.dbt.bridge_runner.BridgeRunner.invoke", new_callable=AsyncMock) as mock:
         mock.side_effect = mock_invoke
-        await server._ensure_initialized_with_context(None)
+        await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
         assert parse_count == initial_count, "Should not parse again when nothing changed"

@@ -628,6 +628,153 @@ class DbtCoreMcpServer:
                 "raw_output": output[:500],
             }
 
+    async def toolImpl_run_models(
+        self,
+        select: str | None = None,
+        exclude: str | None = None,
+        modified_only: bool = False,
+        modified_downstream: bool = False,
+        full_refresh: bool = False,
+        fail_fast: bool = False,
+        check_schema_changes: bool = False,
+    ) -> dict[str, Any]:
+        """Implementation for run_models tool."""
+        # Validate: can't use both smart and manual selection
+        if (modified_only or modified_downstream) and select:
+            raise ValueError("Cannot use both modified_* flags and select parameter")
+
+        # Build command args
+        args = ["run"]
+
+        # Handle smart selection
+        # Use relative path since DBT runs from project_dir
+        state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+
+        if modified_only or modified_downstream:
+            if not state_dir.exists():
+                return {
+                    "status": "error",
+                    "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
+                }
+
+            selector = "state:modified+" if modified_downstream else "state:modified"
+            # Use relative path for --state since cwd=project_dir
+            args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+        # Manual selection
+        elif select:
+            args.extend(["-s", select])
+
+        if exclude:
+            args.extend(["--exclude", exclude])
+
+        if full_refresh:
+            args.append("--full-refresh")
+
+        if fail_fast:
+            args.append("--fail-fast")
+
+        # Capture pre-run table columns for schema change detection
+        pre_run_columns: dict[str, list[str]] = {}
+        if check_schema_changes:
+            # Use dbt list to get models that will be run (without actually running them)
+            list_args = ["list", "--resource-type", "model", "--output", "name"]
+
+            if modified_only or modified_downstream:
+                selector = "state:modified+" if modified_downstream else "state:modified"
+                list_args.extend(["-s", selector, "--state", "target/state_last_run"])
+            elif select:
+                list_args.extend(["-s", select])
+
+            if exclude:
+                list_args.extend(["--exclude", exclude])
+
+            # Get list of models
+            logger.info(f"Getting model list for schema change detection: {list_args}")
+            list_result = await self.runner.invoke(list_args)  # type: ignore
+
+            if list_result.success and list_result.stdout:
+                # Parse model names from output (one per line with --output name)
+                for line in list_result.stdout.strip().split("\n"):
+                    line = line.strip()
+                    # Skip log lines, timestamps, empty lines, and JSON output
+                    if (
+                        not line
+                        or line.startswith("{")
+                        or ":" in line[:10]  # Timestamp like "07:39:44"
+                        or "Running with dbt=" in line
+                        or "Registered adapter:" in line
+                    ):
+                        continue
+                    # With --output name, each line is just the model name
+                    model_name = line
+                    # Query pre-run columns
+                    logger.info(f"Querying pre-run columns for {model_name}")
+                    cols = await self._get_table_columns_from_db(model_name)
+                    if cols:
+                        pre_run_columns[model_name] = cols
+                    else:
+                        # Table doesn't exist yet - mark as new
+                        pre_run_columns[model_name] = []
+
+        # Execute
+        logger.info(f"Running dbt models with args: {args}")
+        result = await self.runner.invoke(args)  # type: ignore
+
+        if not result.success:
+            error_msg = str(result.exception) if result.exception else "Run failed"
+            return {
+                "status": "error",
+                "message": error_msg,
+                "command": " ".join(args),
+            }
+
+        # Parse run_results.json for details
+        run_results = self._parse_run_results()
+
+        # Check for schema changes if requested
+        schema_changes: dict[str, dict[str, list[str]]] = {}
+        if check_schema_changes and pre_run_columns:
+            logger.info("Detecting schema changes by comparing pre/post-run database columns")
+
+            for model_name, old_columns in pre_run_columns.items():
+                # Query post-run columns from database
+                new_columns = await self._get_table_columns_from_db(model_name)
+
+                if not new_columns:
+                    # Model failed to build or was skipped
+                    continue
+
+                # Compare columns
+                added = [c for c in new_columns if c not in old_columns]
+                removed = [c for c in old_columns if c not in new_columns] if old_columns else []
+
+                if added or removed:
+                    schema_changes[model_name] = {}
+                    if added:
+                        schema_changes[model_name]["added"] = added
+                    if removed:
+                        schema_changes[model_name]["removed"] = removed
+
+        # Save state on success for next modified run
+        if result.success and self.project_dir:
+            state_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = self.runner.get_manifest_path()  # type: ignore
+            shutil.copy(manifest_path, state_dir / "manifest.json")
+
+        response: dict[str, Any] = {
+            "status": "success",
+            "command": " ".join(args),
+            "results": run_results.get("results", []),
+            "elapsed_time": run_results.get("elapsed_time"),
+        }
+
+        if schema_changes:
+            response["schema_changes"] = schema_changes
+            response["recommendation"] = "Schema changes detected. Consider running downstream models with modified_downstream=True to propagate changes."
+
+        return response
+
     def _register_tools(self) -> None:
         """Register all dbt tools."""
 
@@ -892,142 +1039,7 @@ class DbtCoreMcpServer:
                 - run_models(modified_only=True, check_schema_changes=True) - Detect schema changes
             """
             await self._ensure_initialized_with_context(ctx)
-
-            # Validate: can't use both smart and manual selection
-            if (modified_only or modified_downstream) and select:
-                raise ValueError("Cannot use both modified_* flags and select parameter")
-
-            # Build command args
-            args = ["run"]
-
-            # Handle smart selection
-            # Use relative path since DBT runs from project_dir
-            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
-
-            if modified_only or modified_downstream:
-                if not state_dir.exists():
-                    return {
-                        "status": "error",
-                        "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
-                    }
-
-                selector = "state:modified+" if modified_downstream else "state:modified"
-                # Use relative path for --state since cwd=project_dir
-                args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-            # Manual selection
-            elif select:
-                args.extend(["-s", select])
-
-            if exclude:
-                args.extend(["--exclude", exclude])
-
-            if full_refresh:
-                args.append("--full-refresh")
-
-            if fail_fast:
-                args.append("--fail-fast")
-
-            # Capture pre-run table columns for schema change detection
-            pre_run_columns: dict[str, list[str]] = {}
-            if check_schema_changes:
-                # Use dbt list to get models that will be run (without actually running them)
-                list_args = ["list", "--resource-type", "model", "--output", "name"]
-
-                if modified_only or modified_downstream:
-                    selector = "state:modified+" if modified_downstream else "state:modified"
-                    list_args.extend(["-s", selector, "--state", "target/state_last_run"])
-                elif select:
-                    list_args.extend(["-s", select])
-
-                if exclude:
-                    list_args.extend(["--exclude", exclude])
-
-                # Get list of models
-                logger.info(f"Getting model list for schema change detection: {list_args}")
-                list_result = await self.runner.invoke(list_args)  # type: ignore
-
-                if list_result.success and list_result.stdout:
-                    # Parse model names from output (one per line with --output name)
-                    for line in list_result.stdout.strip().split("\n"):
-                        line = line.strip()
-                        # Skip log lines, timestamps, empty lines, and JSON output
-                        if (
-                            not line
-                            or line.startswith("{")
-                            or ":" in line[:10]  # Timestamp like "07:39:44"
-                            or "Running with dbt=" in line
-                            or "Registered adapter:" in line
-                        ):
-                            continue
-                        # With --output name, each line is just the model name
-                        model_name = line
-                        # Query pre-run columns
-                        logger.info(f"Querying pre-run columns for {model_name}")
-                        cols = await self._get_table_columns_from_db(model_name)
-                        if cols:
-                            pre_run_columns[model_name] = cols
-                        else:
-                            # Table doesn't exist yet - mark as new
-                            pre_run_columns[model_name] = []
-
-            # Execute
-            logger.info(f"Running dbt models with args: {args}")
-            result = await self.runner.invoke(args)  # type: ignore
-
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "Run failed"
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "command": " ".join(args),
-                }
-
-            # Parse run_results.json for details
-            run_results = self._parse_run_results()
-
-            # Check for schema changes if requested
-            schema_changes: dict[str, dict[str, list[str]]] = {}
-            if check_schema_changes and pre_run_columns:
-                logger.info("Detecting schema changes by comparing pre/post-run database columns")
-
-                for model_name, old_columns in pre_run_columns.items():
-                    # Query post-run columns from database
-                    new_columns = await self._get_table_columns_from_db(model_name)
-
-                    if not new_columns:
-                        # Model failed to build or was skipped
-                        continue
-
-                    # Compare columns
-                    added = [c for c in new_columns if c not in old_columns]
-                    removed = [c for c in old_columns if c not in new_columns] if old_columns else []
-
-                    if added or removed:
-                        schema_changes[model_name] = {}
-                        if added:
-                            schema_changes[model_name]["added"] = added
-                        if removed:
-                            schema_changes[model_name]["removed"] = removed
-
-            # Save state on success for next modified run
-            if result.success and self.project_dir:
-                state_dir.mkdir(parents=True, exist_ok=True)
-                manifest_path = self.runner.get_manifest_path()  # type: ignore
-                shutil.copy(manifest_path, state_dir / "manifest.json")
-
-            response: dict[str, Any] = {
-                "status": "success",
-                "command": " ".join(args),
-                "results": run_results.get("results", []),
-                "elapsed_time": run_results.get("elapsed_time"),
-            }
-
-            if schema_changes:
-                response["schema_changes"] = schema_changes
-                response["recommendation"] = "Schema changes detected. Consider running downstream models with modified_downstream=True to propagate changes."
-
-            return response
+            return await self.toolImpl_run_models(select, exclude, modified_only, modified_downstream, full_refresh, fail_fast, check_schema_changes)
 
         @self.app.tool()
         async def test_models(
