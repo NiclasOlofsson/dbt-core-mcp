@@ -470,11 +470,17 @@ class DbtCoreMcpServer:
         """Register all dbt tools."""
 
         @self.app.tool()
-        async def get_project_info(ctx: Context) -> dict[str, Any]:
-            """Get information about the dbt project.
+        async def get_project_info(
+            ctx: Context,
+            run_debug: bool = True,
+        ) -> dict[str, Any]:
+            """Get information about the dbt project with optional diagnostics.
+
+            Args:
+                run_debug: Run `dbt debug` to validate environment and test connection (default: True)
 
             Returns:
-                Dictionary with project information
+                Dictionary with project information and diagnostic results
             """
             await self._ensure_initialized_with_context(ctx)
 
@@ -484,6 +490,28 @@ class DbtCoreMcpServer:
             info["profiles_dir"] = self.profiles_dir
             info["adapter_type"] = self.adapter_type
             info["status"] = "ready"
+
+            # Run full dbt debug if requested (default behavior)
+            if run_debug:
+                debug_result = await self.runner.run_dbt_command(["debug"])  # type: ignore
+
+                # Parse the debug output
+                diagnostics: dict[str, Any] = {
+                    "command_run": "dbt debug",
+                    "success": debug_result.get("success", False),
+                    "output": debug_result.get("output", ""),
+                }
+
+                # Extract connection status from output
+                output = str(debug_result.get("output", ""))
+                if "Connection test: [OK connection ok]" in output or "Connection test: OK" in output:
+                    diagnostics["connection_status"] = "ok"
+                elif "Connection test: [ERROR" in output or "Connection test: FAIL" in output:
+                    diagnostics["connection_status"] = "failed"
+                else:
+                    diagnostics["connection_status"] = "unknown"
+
+                info["diagnostics"] = diagnostics
 
             return info
 

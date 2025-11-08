@@ -227,137 +227,161 @@ The server automatically detects and uses YOUR project's dbt installation via br
 ### Project Information
 
 #### `get_project_info`
-Get basic information about your dbt project including name, version, adapter type, and model/source counts.
+Get basic information about your dbt project including name, version, adapter type, and resource counts. By default, also runs `dbt debug` to validate your environment and test the database connection.
 
 >&nbsp;  
 >You: *"What dbt version is this project using?"*  
->Copilot: *Shows project info with dbt version and adapter type*
+>Copilot: *Shows project info with dbt version, adapter type, and connection status*
 >
 >You: *"How many models and sources are in this project?"*  
->Copilot: *Displays counts and project overview*  
+>Copilot: *Displays counts and project overview with diagnostics*
+>
+>You: *"Is my database connection working?"*  
+>Copilot: *Shows connection test results from dbt debug*
+>
+>You: *"Check my dbt setup"*  
+>Copilot: *Runs full environment validation and reports any issues*  
 >&nbsp;
 
-#### `list_models`
-List all models in your project with their names, schemas, materialization types, tags, and dependencies.
+**Parameters:**
+- `run_debug`: Run `dbt debug` to validate environment and test connection (default: True)
+
+**Returns:** Project metadata plus diagnostic results including:
+- Database connection status (ok/failed/unknown)
+- Environment validation output
+- System and dependency checks
+
+**Note:** Set `run_debug=False` to skip diagnostics and get only basic project info (faster for repeated queries).
+
+### Resource Discovery (Unified Tools)
+
+**One tool, all resource types** - these unified tools work across models, sources, seeds, snapshots, and tests. No need for separate tools for each type.
+
+#### `list_resources`
+List all resources in your project, or filter by type (models, sources, seeds, snapshots, tests).
 
 >&nbsp;  
->You: *"Show me all the models in this project"*  
->Copilot: *Lists all models with their types and schemas*
+>You: *"Show me all resources in this project"*  
+>Copilot: *Lists all models, sources, seeds, snapshots, and tests*
+>
+>You: *"What models do we have?"*  
+>Copilot: *Filters to show only models with their materialization types*
+>
+>You: *"List all data sources"*  
+>Copilot: *Shows configured sources with schemas and descriptions*
+>
+>You: *"Show me the seeds"*  
+>Copilot: *Displays CSV seed files available in the project*
 >
 >You: *"Which models are materialized as tables?"*  
->Copilot: *Filters and shows only table-materialized models*
->
->You: *"List all staging models"*  
->Copilot: *Shows models with staging prefix or tag*  
->&nbsp;
-
-#### `list_sources`
-List all sources in your project with their identifiers, schemas, and descriptions.
-
->&nbsp;  
->You: *"What data sources are configured in this project?"*  
->Copilot: *Lists all configured sources with descriptions*
->
->You: *"Show me all available source tables"*  
->Copilot: *Displays source tables and their schemas*  
->&nbsp;
-
-### Lineage & Impact Analysis
-
-#### `get_model_lineage`
-Get the full dependency tree (lineage) for one or more models showing upstream and/or downstream relationships.
-
->&nbsp;  
->You: *"Show me the lineage for the customers model"*  
->Copilot: *Displays full dependency tree with upstream sources and downstream models*
->
->You: *"What models does stg_orders depend on?"*  
->Copilot: *Shows upstream dependencies (sources and parent models)*
->
->You: *"What's downstream from stg_customers and stg_orders?"*  
->Copilot: *Shows combined downstream dependencies for both models*
->
->You: *"Show me where the revenue model gets its data from"*  
->Copilot: *Displays upstream lineage with all source data*  
+>Copilot: *Filters models by materialization type*  
 >&nbsp;
 
 **Parameters:**
-- `names`: Model name(s) - single string or list of models
-- `direction`: "upstream" (sources), "downstream" (dependents), or "both" (default)
-- `depth`: Maximum levels to traverse (None for unlimited, 1 for immediate, etc.)
+- `resource_type`: Optional filter - `"model"`, `"source"`, `"seed"`, `"snapshot"`, `"test"`, or `None` for all
 
-**Use cases:**
-- Understand data flow and model relationships
-- Explore where models get their data from
-- See what models depend on specific models
-- Analyze combined dependencies for multiple models
+**Returns:** Consistent structure for all types with common fields (name, description, tags) plus type-specific details (materialization, source_name, etc.)
 
-#### `analyze_model_impact`
-Analyze the impact of changing one or more models - shows all downstream dependencies affected.
-
->&nbsp;  
->You: *"What's the impact of changing the stg_customers model?"*  
->Copilot: *Shows all downstream models, tests, and affected resources*
->
->You: *"If I modify stg_orders, what else needs to run?"*  
->Copilot: *Lists impacted models grouped by distance and recommends dbt command*
->
->You: *"What's the combined impact of changing all staging models?"*  
->Copilot: *Analyzes combined blast radius across multiple models*
->
->You: *"How many models will break if I change this?"*  
->Copilot: *Shows total impact count and affected resources*  
->&nbsp;
-
-**Parameters:**
-- `names`: Model name(s) - single string or list of models
-
-**Returns:**
-- List of affected models grouped by distance
-- Count of affected tests and other resources
-- Total impact statistics (deduplicated for multiple models)
-- Recommended dbt command to run
-
-**Use cases:**
-- Before refactoring: understand blast radius
-- Planning incremental rollouts
-- Estimating rebuild time after changes
-- Risk assessment for model modifications
-
-### Model Information
-
-#### `get_model_info`
-Get complete information about a specific model including configuration, dependencies, and actual database schema.
+#### `get_resource_info`
+Get detailed information about any resource - works for models, sources, seeds, snapshots, and tests.
 
 >&nbsp;  
 >You: *"Show me details about the customers model"*  
 >Copilot: *Displays full model metadata, config, and column information*
 >
+>You: *"What's in the raw_customers source?"*  
+>Copilot: *Shows source schema, columns, and freshness configuration*
+>
+>You: *"Describe the country_codes seed"*  
+>Copilot: *Returns seed configuration and column definitions*
+>
 >You: *"What columns does the orders model have?"*  
 >Copilot: *Shows column names, types, and descriptions from database*
 >
->You: *"What's the materialization type for stg_payments?"*  
->Copilot: *Returns materialization config (view, table, incremental, etc.)*  
+>You: *"Tell me about the customer_snapshot"*  
+>Copilot: *Displays snapshot configuration and SCD tracking setup*  
 >&nbsp;
 
 **Parameters:**
-- `name`: Model name (e.g., "customers")
+- `name`: Resource name (e.g., "customers", "jaffle_shop.raw_orders")
+- `resource_type`: Optional - auto-detects if not specified
 - `include_database_schema`: Include actual column types from database (default: true)
 
-#### `get_source_info`
-Get detailed information about a specific source including all configuration and metadata.
+**Auto-detection:** Just provide the name - the tool automatically finds it whether it's a model, source, seed, snapshot, or test. For sources, use `"source_name.table_name"` format or just the table name.
+
+### Lineage & Impact Analysis (Unified Tools)
+
+**Understand relationships across all resource types** - analyze dependencies and impact for models, sources, seeds, snapshots, and tests.
+
+#### `get_lineage`
+Trace dependency relationships for any resource - shows what it depends on (upstream) and what depends on it (downstream).
 
 >&nbsp;  
->You: *"Show me the schema for the raw customers source"*  
->Copilot: *Displays source schema, columns, and freshness configuration*
+>You: *"Show me the lineage for the customers model"*  
+>Copilot: *Displays full dependency tree with upstream sources and downstream models*
 >
->You: *"What columns are in the orders source table?"*  
->Copilot: *Shows column definitions and metadata*  
+>You: *"What does stg_orders depend on?"*  
+>Copilot: *Shows upstream dependencies (sources and parent models)*
+>
+>You: *"What's downstream from the raw_customers source?"*  
+>Copilot: *Shows all models that use this source*
+>
+>You: *"Where does the revenue model get its data from?"*  
+>Copilot: *Displays upstream lineage with all source data*
+>
+>You: *"Show me everything that uses the country_codes seed"*  
+>Copilot: *Lists all downstream models that reference this seed*  
 >&nbsp;
 
 **Parameters:**
-- `source_name`: Source name (e.g., "jaffle_shop")
-- `table_name`: Table name within the source (e.g., "customers")
+- `name`: Resource name (works for models, sources, seeds, snapshots, tests)
+- `direction`: `"upstream"` (sources), `"downstream"` (dependents), or `"both"` (default)
+- `depth`: Maximum levels to traverse (None for unlimited, 1 for immediate, etc.)
+- `resource_type`: Optional - auto-detects if not specified
+
+**Returns:** Dependency tree with statistics (upstream_count, downstream_count, total_dependencies)
+
+**Use cases:**
+- Understand data flow and relationships
+- Explore where resources get their data
+- See what depends on specific resources
+- Impact analysis before making changes
+
+#### `analyze_impact`
+Analyze the blast radius of changing any resource - shows all downstream dependencies that would be affected.
+
+>&nbsp;  
+>You: *"What's the impact of changing the stg_customers model?"*  
+>Copilot: *Shows all downstream models, tests, and affected resources*
+>
+>You: *"If I modify the raw_orders source, what needs to run?"*  
+>Copilot: *Lists impacted models grouped by distance with recommended commands*
+>
+>You: *"What breaks if I change the country_codes seed?"*  
+>Copilot: *Shows total impact count and affected resources*
+>
+>You: *"How many models depend on this snapshot?"*  
+>Copilot: *Displays impact statistics and dependency count*  
+>&nbsp;
+
+**Parameters:**
+- `name`: Resource name (works for models, sources, seeds, snapshots, tests)
+- `resource_type`: Optional - auto-detects if not specified
+
+**Returns:**
+- Affected resources grouped by distance from the changed resource
+- Count of affected tests and other resources
+- Total impact statistics
+- Context-aware recommended dbt commands (e.g., `dbt run -s stg_customers+`)
+- Impact level message (No/Low/Medium/High)
+
+**Use cases:**
+- Before refactoring: understand blast radius
+- Planning incremental rollouts
+- Estimating rebuild time after changes
+- Risk assessment for modifications
+
+### Model Information
 
 #### `get_compiled_sql`
 Get the fully compiled SQL for a model with all Jinja templating resolved to actual table names.
