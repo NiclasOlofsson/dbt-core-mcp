@@ -520,6 +520,17 @@ class DbtCoreMcpServer:
         except ValueError as e:
             raise ValueError(f"Resource not found: {e}")
 
+    async def toolImpl_list_resources(self, resource_type: str | None = None) -> list[dict[str, Any]]:
+        """Implementation for list_resources tool.
+
+        Args:
+            resource_type: Optional filter (model, source, seed, snapshot, test, analysis, macro)
+
+        Returns:
+            List of resource dictionaries with consistent structure
+        """
+        return self.manifest.get_resources(resource_type)  # type: ignore
+
     def _register_tools(self) -> None:
         """Register all dbt tools."""
 
@@ -619,8 +630,7 @@ class DbtCoreMcpServer:
                 list_resources("macro") -> all macros (discover installed packages)
             """
             await self._ensure_initialized_with_context(ctx)
-
-            return self.manifest.get_resources(resource_type)  # type: ignore
+            return await self.toolImpl_list_resources(resource_type=resource_type)
 
         @self.app.tool()
         async def get_resource_info(
