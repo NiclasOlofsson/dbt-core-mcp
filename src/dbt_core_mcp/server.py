@@ -172,7 +172,7 @@ class DbtCoreMcpServer:
         Returns:
             True if manifest is missing or older than any source files
         """
-        if not self.project_dir or not self.runner:
+        if not self.project_dir:
             return True
 
         manifest_path = self.project_dir / "target" / "manifest.json"
@@ -213,8 +213,12 @@ class DbtCoreMcpServer:
 
         return False
 
-    async def _initialize_dbt_components(self) -> None:
-        """Initialize dbt runner and manifest loader."""
+    async def _initialize_dbt_components(self, needs_parse: bool = True) -> None:
+        """Initialize dbt runner and manifest loader.
+
+        Args:
+            needs_parse: Whether to run dbt parse. If False, assumes manifest already exists and is fresh.
+        """
 
         if not self.project_dir:
             raise RuntimeError("Project directory not set")
@@ -232,12 +236,15 @@ class DbtCoreMcpServer:
             # Create bridge runner
             self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout)
 
-        # Always parse when this method is called (caller already determined we need to reinitialize)
-        logger.info("Running dbt parse to generate manifest...")
-        result = await self.runner.invoke(["parse"])
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Unknown error"
-            raise RuntimeError(f"Failed to parse dbt project: {error_msg}")
+        # Only parse if needed (manifest is stale or missing)
+        if needs_parse:
+            logger.info("Running dbt parse to generate manifest...")
+            result = await self.runner.invoke(["parse"])
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "Unknown error"
+                raise RuntimeError(f"Failed to parse dbt project: {error_msg}")
+        else:
+            logger.info("Skipping dbt parse - manifest is fresh")
 
         # Initialize or reload manifest loader
         manifest_path = self.runner.get_manifest_path()
@@ -277,9 +284,13 @@ class DbtCoreMcpServer:
         if not self.project_dir:
             raise RuntimeError("dbt project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
 
-        # Initialize/re-initialize components if needed
-        if self._is_manifest_stale():
-            await self._initialize_dbt_components()
+        # Check if manifest is stale (time delta check)
+        needs_parse = self._is_manifest_stale()
+
+        # Initialize components if needed (first time or after workspace change)
+        # Parse only if manifest is stale
+        if not self.runner or not self.manifest or needs_parse:
+            await self._initialize_dbt_components(needs_parse=needs_parse)
 
     def _parse_run_results(self) -> dict[str, Any]:
         """Parse target/run_results.json after dbt run/test/build.
