@@ -17,6 +17,10 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - name: Sync dependencies
         run: uv sync --group dev
+      - name: Setup jaffle_shop example
+        run: |
+          cd examples/jaffle_shop
+          uv sync
       - name: Lint
         run: uv run ruff check src tests
       - name: Type check

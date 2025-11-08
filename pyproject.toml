@@ -59,8 +59,6 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pyright>=1.1.0",
     "ruff>=0.1.0",
-    "dbt-core>=1.9.0",
-    "dbt-duckdb>=1.9.0",
 ]
 
 
