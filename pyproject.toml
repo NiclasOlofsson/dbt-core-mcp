@@ -32,7 +32,6 @@ dependencies = [
     "fastmcp>=2.11.0",
     "pydantic>=2.0.0",
     "typing-extensions",
-    "dbt-core>=1.7.0",
     "psutil>=5.9.0",
     "pyyaml>=6.0",
 ]
@@ -58,11 +57,8 @@ packages = ["src/dbt_core_mcp"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-    "mypy>=1.0.0",
-    "pre-commit>=3.0.0",
+    "pyright>=1.1.0",
     "ruff>=0.1.0",
-    "types-pyyaml>=6.0.12.20250915",
-    "types-psutil>=6.0.0.20250907",
 ]
 
 
@@ -73,6 +69,17 @@ target-version = "py310"
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnusedFunction = false
+reportUnusedVariable = "warning"
+reportUnnecessaryComparison = false
 
 [tool.mypy]
 python_version = "3.10"

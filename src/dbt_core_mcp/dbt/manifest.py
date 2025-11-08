@@ -178,7 +178,7 @@ class ManifestLoader:
         nodes = self._manifest.get("nodes", {})
         for unique_id, node in nodes.items():
             if node.get("resource_type") == "model" and node.get("name") == name:
-                return dict(node)  # type cast to satisfy mypy
+                return dict(node)  # type cast to satisfy type checker
 
         raise ValueError(f"Model '{name}' not found in manifest")
 
@@ -223,7 +223,7 @@ class ManifestLoader:
         sources = self._manifest.get("sources", {})
         for unique_id, source in sources.items():
             if source.get("source_name") == source_name and source.get("name") == table_name:
-                return dict(source)  # type cast to satisfy mypy
+                return dict(source)  # type cast to satisfy type checker
 
         raise ValueError(f"Source '{source_name}.{table_name}' not found in manifest")
 
