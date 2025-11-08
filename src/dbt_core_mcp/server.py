@@ -1108,15 +1108,15 @@ class DbtCoreMcpServer:
             Package Discovery:
                 Use resource_type="macro" to discover installed dbt packages.
                 Macros follow the naming pattern: macro.{package_name}.{macro_name}
-                
+
                 Example - Check if dbt_utils is installed:
                     macros = list_resources("macro")
                     has_dbt_utils = any(m["unique_id"].startswith("macro.dbt_utils.") for m in macros)
-                
+
                 Example - List all installed packages:
                     macros = list_resources("macro")
-                    packages = {m["unique_id"].split(".")[1] for m in macros 
-                               if m["unique_id"].startswith("macro.") and 
+                    packages = {m["unique_id"].split(".")[1] for m in macros
+                               if m["unique_id"].startswith("macro.") and
                                m["unique_id"].split(".")[1] != "dbt"}
 
             Examples:
