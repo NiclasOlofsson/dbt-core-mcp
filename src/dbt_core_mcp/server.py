@@ -985,6 +985,43 @@ class DbtCoreMcpServer:
             "elapsed_time": run_results.get("elapsed_time"),
         }
 
+    async def toolImpl_snapshot_models(
+        self,
+        select: str | None = None,
+        exclude: str | None = None,
+    ) -> dict[str, Any]:
+        """Implementation of snapshot_models tool."""
+        # Build command args
+        args = ["snapshot"]
+
+        if select:
+            args.extend(["-s", select])
+
+        if exclude:
+            args.extend(["--exclude", exclude])
+
+        # Execute
+        logger.info(f"Running DBT snapshot with args: {args}")
+        result = await self.runner.invoke(args)  # type: ignore
+
+        if not result.success:
+            error_msg = str(result.exception) if result.exception else "Snapshot failed"
+            return {
+                "status": "error",
+                "message": error_msg,
+                "command": " ".join(args),
+            }
+
+        # Parse run_results.json for details
+        run_results = self._parse_run_results()
+
+        return {
+            "status": "success",
+            "command": " ".join(args),
+            "results": run_results.get("results", []),
+            "elapsed_time": run_results.get("elapsed_time"),
+        }
+
     def _register_tools(self) -> None:
         """Register all dbt tools."""
 
@@ -1394,36 +1431,8 @@ class DbtCoreMcpServer:
             Note: Snapshots do not support smart selection (modified_only/modified_downstream)
                 because they are time-dependent, not change-dependent.
             """
-            await self._ensure_initialized_with_context(ctx)  # Build command args
-            args = ["snapshot"]
-
-            if select:
-                args.extend(["-s", select])
-
-            if exclude:
-                args.extend(["--exclude", exclude])
-
-            # Execute
-            logger.info(f"Running DBT snapshot with args: {args}")
-            result = await self.runner.invoke(args)  # type: ignore
-
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "Snapshot failed"
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "command": " ".join(args),
-                }
-
-            # Parse run_results.json for details
-            run_results = self._parse_run_results()
-
-            return {
-                "status": "success",
-                "command": " ".join(args),
-                "results": run_results.get("results", []),
-                "elapsed_time": run_results.get("elapsed_time"),
-            }
+            await self._ensure_initialized_with_context(ctx)
+            return await self.toolImpl_snapshot_models(select, exclude)
 
         @self.app.tool()
         async def install_deps(ctx: Context) -> dict[str, Any]:
