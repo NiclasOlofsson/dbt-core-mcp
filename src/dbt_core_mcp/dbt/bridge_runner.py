@@ -8,9 +8,13 @@ using an inline Python script to invoke dbtRunner.
 import asyncio
 import json
 import logging
+import platform
 from pathlib import Path
 from typing import Any
 
+import psutil
+
+from ..utils.env_detector import get_env_vars
 from ..utils.process_check import is_dbt_running, wait_for_dbt_completion
 from .runner import DbtRunnerResult
 
@@ -110,6 +114,16 @@ class BridgeRunner:
         logger.info(f"Using Python: {self.python_command}")
         logger.info(f"Working directory: {self.project_dir}")
 
+        # Get environment-specific variables (e.g., PIPENV_IGNORE_VIRTUALENVS for pipenv)
+        env_vars = get_env_vars(self.python_command)
+        env = None
+        if env_vars:
+            import os
+
+            env = os.environ.copy()
+            env.update(env_vars)
+            logger.info(f"Adding environment variables: {list(env_vars.keys())}")
+
         proc = None
         try:
             logger.info("Starting subprocess...")
@@ -120,6 +134,7 @@ class BridgeRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
+                env=env,
             )
 
             # Wait for completion with timeout
@@ -160,8 +175,8 @@ class BridgeRunner:
                 # Non-zero return code indicates failure
                 error_msg = stderr.strip() if stderr else stdout.strip()
                 logger.error(f"dbt command failed with code {returncode}")
-                logger.debug(f"stdout: {stdout[:500]}")
-                logger.debug(f"stderr: {stderr[:500]}")
+                logger.error(f"stdout: {stdout[:500]}")
+                logger.error(f"stderr: {stderr[:500]}")
 
                 # Try to extract meaningful error from stderr or stdout
                 if not error_msg and stdout:
@@ -173,20 +188,11 @@ class BridgeRunner:
                 )
 
         except asyncio.CancelledError:
-            # Handle cancellation - kill the subprocess
-            logger.warning(f"dbt command cancelled, terminating subprocess: {args}")
+            # Kill the subprocess when cancelled
             if proc and proc.returncode is None:
-                # Try graceful termination first
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=2.0)
-                    logger.info("Subprocess terminated gracefully")
-                except asyncio.TimeoutError:
-                    # Force kill if termination takes too long
-                    logger.warning("Subprocess didn't terminate, force killing")
-                    proc.kill()
-                    await proc.wait()
-            raise  # Re-raise to propagate cancellation
+                logger.info(f"Cancellation detected, killing subprocess PID {proc.pid}")
+                await asyncio.shield(self._kill_process_tree(proc))
+            raise
         except Exception as e:
             logger.exception(f"Error executing dbt command: {e}")
             # Clean up process on unexpected errors
@@ -194,6 +200,104 @@ class BridgeRunner:
                 proc.kill()
                 await proc.wait()
             return DbtRunnerResult(success=False, exception=e)
+
+    async def _kill_process_tree(self, proc: asyncio.subprocess.Process) -> None:
+        """Kill a process and all its children."""
+        pid = proc.pid
+        if pid is None:
+            logger.warning("Cannot kill process: PID is None")
+            return
+
+        # Log child processes before killing
+        try:
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+            if children:
+                logger.info(f"Process {pid} has {len(children)} child process(es): {[p.pid for p in children]}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+        if platform.system() == "Windows":
+            # On Windows, try graceful termination first, then force kill
+            try:
+                # Step 1: Try graceful termination (without /F flag)
+                logger.info(f"Attempting graceful termination of process tree for PID {pid}")
+                terminate_proc = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/T",  # Kill tree, but no /F (force) flag
+                    "/PID",
+                    str(pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+
+                # Wait for taskkill command to complete (it returns immediately)
+                await terminate_proc.wait()
+
+                # Now wait for the actual process to terminate (poll with timeout)
+                start_time = asyncio.get_event_loop().time()
+                timeout = 10.0
+                poll_interval = 0.5
+
+                while (asyncio.get_event_loop().time() - start_time) < timeout:
+                    if not self._is_process_running(pid):
+                        logger.info(f"Process {pid} terminated gracefully")
+                        return
+                    await asyncio.sleep(poll_interval)
+
+                # If we get here, process didn't terminate gracefully
+                logger.info(f"Process {pid} still running after {timeout}s, forcing kill...")
+
+                # Step 2: Force kill if graceful didn't work
+                logger.info(f"Force killing process tree for PID {pid}")
+                kill_proc = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/F",  # Force
+                    "/T",  # Kill tree
+                    "/PID",
+                    str(pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+
+                await asyncio.wait_for(kill_proc.wait(), timeout=5.0)
+
+                # Verify process is dead
+                await asyncio.sleep(0.3)
+                try:
+                    if psutil.Process(pid).is_running():
+                        logger.warning(f"Process {pid} still running after force kill")
+                    else:
+                        logger.info(f"Successfully killed process tree for PID {pid}")
+                except psutil.NoSuchProcess:
+                    logger.info(f"Process {pid} terminated successfully")
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Force kill timed out for PID {pid}")
+            except Exception as e:
+                logger.warning(f"Failed to kill process tree: {e}")
+                # Last resort fallback
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+        else:
+            # On Unix, terminate then kill if needed
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+
+    def _is_process_running(self, pid: int) -> bool:
+        """Check if a process is still running."""
+        try:
+            process = psutil.Process(pid)
+            return process.is_running()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
 
     def get_manifest_path(self) -> Path:
         """Get the path to the manifest.json file."""

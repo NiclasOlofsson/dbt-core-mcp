@@ -2,7 +2,7 @@
 Environment detection for dbt projects.
 
 Detects the Python environment setup and returns the appropriate command
-to run Python in that environment.
+and environment variables to run Python in that environment.
 """
 
 import logging
@@ -68,6 +68,45 @@ def detect_python_command(project_dir: Path) -> list[str]:
     # Fall back to system Python
     logger.warning(f"No virtual environment detected in {project_dir}, using system Python")
     return [sys.executable]
+
+
+def get_env_vars(python_command: list[str]) -> dict[str, str] | None:
+    """
+    Get environment variables needed for the given Python command.
+
+    This centralizes environment-specific configuration that's needed
+    to properly run commands in different virtual environment managers.
+
+    Args:
+        python_command: The Python command prefix (e.g., ['pipenv', 'run', 'python'])
+
+    Returns:
+        Dictionary of environment variables to set, or None if no special env needed
+
+    Examples:
+        >>> get_env_vars(['pipenv', 'run', 'python'])
+        {'PIPENV_IGNORE_VIRTUALENVS': '1', 'PIPENV_VERBOSITY': '-1'}
+        >>> get_env_vars(['python'])
+        None
+    """
+    if not python_command:
+        return None
+
+    env_tool = python_command[0]
+
+    if env_tool == "pipenv":
+        # Pipenv needs to ignore outer virtualenvs when running inside another env (e.g., uv run)
+        # This prevents pipenv from using the wrong environment
+        return {
+            "PIPENV_IGNORE_VIRTUALENVS": "1",
+            "PIPENV_VERBOSITY": "-1",
+        }
+
+    # Add more env-specific settings here as needed
+    # elif env_tool == "poetry":
+    #     return {"POETRY_VIRTUALENVS_IN_PROJECT": "true"}
+
+    return None
 
 
 def _find_venv(project_dir: Path) -> Optional[Path]:
