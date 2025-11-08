@@ -563,7 +563,12 @@ class DbtCoreMcpServer:
             return self.manifest.get_resources(resource_type)  # type: ignore
 
         @self.app.tool()
-        def get_resource_info(name: str, resource_type: str | None = None, include_database_schema: bool = True) -> dict[str, Any]:
+        def get_resource_info(
+            name: str,
+            resource_type: str | None = None,
+            include_database_schema: bool = True,
+            include_compiled_sql: bool = True,
+        ) -> dict[str, Any]:
             """Get detailed information about any dbt resource (model, source, seed, snapshot, test, etc.).
 
             This unified tool works across all resource types, auto-detecting the resource or filtering by type.
@@ -581,6 +586,9 @@ class DbtCoreMcpServer:
                     - None: Auto-detect (searches all types)
                 include_database_schema: If True (default), query actual database table schema
                     for models/seeds/snapshots and add as 'database_columns' field
+                include_compiled_sql: If True (default), include compiled SQL with Jinja resolved
+                    ({{ ref() }}, {{ source() }} → actual table names). Only applicable to models.
+                    Will trigger dbt compile if not already compiled. Set to False to skip compilation.
 
             Returns:
                 Resource information dictionary. If multiple matches found, returns:
@@ -594,32 +602,51 @@ class DbtCoreMcpServer:
                 get_resource_info("customers", "model") -> get model only
                 get_resource_info("jaffle_shop.customers", "source") -> specific source
                 get_resource_info("test_unique_customers") -> find test
+                get_resource_info("customers", include_compiled_sql=True) -> include compiled SQL
             """
             self._ensure_initialized()
 
             try:
-                result = self.manifest.get_resource_node(name, resource_type)  # type: ignore
+                # Get resource info with manifest method (handles basic enrichment)
+                result = self.manifest.get_resource_info(  # type: ignore
+                    name,
+                    resource_type,
+                    include_database_schema=False,  # We'll handle this below for database schema
+                    include_compiled_sql=include_compiled_sql,
+                )
 
                 # Handle multiple matches case
                 if result.get("multiple_matches"):
                     return result
 
-                # Single match - enrich with database schema if requested
+                # Single match - check if we need to trigger compilation
                 node_type = result.get("resource_type")
 
-                # Remove heavy fields to keep context lightweight
-                result_copy = dict(result)
-                result_copy.pop("raw_code", None)
-                result_copy.pop("compiled_code", None)
+                if include_compiled_sql and node_type == "model":
+                    # If compiled SQL requested but not available, trigger compilation
+                    if result.get("compiled_sql") is None and not result.get("compiled_sql_cached"):
+                        logger.info(f"Compiling model: {name}")
+                        compile_result = self.runner.invoke_compile(name, force=False)  # type: ignore
+
+                        if compile_result.success:
+                            # Reload manifest to get compiled code
+                            self.manifest.load()  # type: ignore
+                            # Re-fetch the resource to get updated compiled_code
+                            result = self.manifest.get_resource_info(  # type: ignore
+                                name,
+                                resource_type,
+                                include_database_schema=False,
+                                include_compiled_sql=True,
+                            )
 
                 # Query database schema for applicable resource types
                 if include_database_schema and node_type in ("model", "seed", "snapshot"):
                     resource_name = result.get("name", name)
                     schema = self._get_table_schema_from_db(resource_name)
                     if schema:
-                        result_copy["database_columns"] = schema
+                        result["database_columns"] = schema
 
-                return result_copy
+                return result
 
             except ValueError as e:
                 raise ValueError(f"Resource not found: {e}")
@@ -724,61 +751,6 @@ class DbtCoreMcpServer:
                 return result
             except ValueError as e:
                 raise ValueError(f"Impact analysis error: {e}")
-
-        @self.app.tool()
-        def get_compiled_sql(name: str, force: bool = False) -> dict[str, Any]:
-            """Get the compiled SQL for a specific dbt model.
-
-            Returns the fully compiled SQL with all Jinja templating rendered
-            ({{ ref() }}, {{ source() }}, etc. resolved to actual table names).
-
-            Args:
-                name: Model name (e.g., 'customers' or 'staging.stg_orders')
-                force: If True, force recompilation even if already compiled
-
-            Returns:
-                Dictionary with compiled SQL and metadata
-            """
-            self._ensure_initialized()
-
-            try:
-                # Check if already compiled
-                compiled_code = self.manifest.get_compiled_code(name)  # type: ignore
-
-                if compiled_code and not force:
-                    return {
-                        "model_name": name,
-                        "compiled_sql": compiled_code,
-                        "status": "success",
-                        "cached": True,
-                    }
-
-                # Need to compile
-                logger.info(f"Compiling model: {name}")
-                result = self.runner.invoke_compile(name, force=force)  # type: ignore
-
-                if not result.success:
-                    error_msg = str(result.exception) if result.exception else "Compilation failed"
-                    raise RuntimeError(f"Failed to compile model '{name}': {error_msg}")
-
-                # Reload manifest to get compiled code
-                self.manifest.load()  # type: ignore
-                compiled_code = self.manifest.get_compiled_code(name)  # type: ignore
-
-                if not compiled_code:
-                    raise RuntimeError(f"Model '{name}' compiled but no compiled_code found in manifest")
-
-                return {
-                    "model_name": name,
-                    "compiled_sql": compiled_code,
-                    "status": "success",
-                    "cached": False,
-                }
-
-            except ValueError as e:
-                raise ValueError(f"Model not found: {e}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to get compiled SQL: {e}")
 
         @self.app.tool()
         def query_database(sql: str, limit: int | None = None) -> dict[str, Any]:

@@ -287,7 +287,7 @@ Get detailed information about any resource - works for models, sources, seeds, 
 
 >&nbsp;  
 >You: *"Show me details about the customers model"*  
->Copilot: *Displays full model metadata, config, and column information*
+>Copilot: *Displays full model metadata, config, column information, and compiled SQL*
 >
 >You: *"What's in the raw_customers source?"*  
 >Copilot: *Shows source schema, columns, and freshness configuration*
@@ -298,6 +298,9 @@ Get detailed information about any resource - works for models, sources, seeds, 
 >You: *"What columns does the orders model have?"*  
 >Copilot: *Shows column names, types, and descriptions from database*
 >
+>You: *"Show me the compiled SQL for customers"*  
+>Copilot: *Returns model info with compiled SQL (all Jinja resolved)*
+>
 >You: *"Tell me about the customer_snapshot"*  
 >Copilot: *Displays snapshot configuration and SCD tracking setup*  
 >&nbsp;
@@ -306,8 +309,11 @@ Get detailed information about any resource - works for models, sources, seeds, 
 - `name`: Resource name (e.g., "customers", "jaffle_shop.raw_orders")
 - `resource_type`: Optional - auto-detects if not specified
 - `include_database_schema`: Include actual column types from database (default: true)
+- `include_compiled_sql`: Include compiled SQL with Jinja resolved (default: true, models only)
 
 **Auto-detection:** Just provide the name - the tool automatically finds it whether it's a model, source, seed, snapshot, or test. For sources, use `"source_name.table_name"` format or just the table name.
+
+**Compiled SQL:** For models, automatically includes compiled SQL with all `{{ ref() }}` and `{{ source() }}` resolved to actual table names. Will trigger `dbt compile` if not already compiled. Set `include_compiled_sql=False` to skip compilation.
 
 ### Lineage & Impact Analysis (Unified Tools)
 
@@ -381,25 +387,7 @@ Analyze the blast radius of changing any resource - shows all downstream depende
 - Estimating rebuild time after changes
 - Risk assessment for modifications
 
-### Model Information
-
-#### `get_compiled_sql`
-Get the fully compiled SQL for a model with all Jinja templating resolved to actual table names.
-
->&nbsp;  
->You: *"Show me the compiled SQL for the customers model"*  
->Copilot: *Returns SQL with all {{ ref() }} and {{ source() }} resolved*
->
->You: *"What does the final query look like for stg_orders?"*  
->Copilot: *Shows compiled SQL with actual table names*
->
->You: *"Convert the customers model Jinja to actual SQL"*  
->Copilot: *Compiles and displays executable SQL*  
->&nbsp;
-
-**Parameters:**
-- `name`: Model name
-- `force`: Force recompilation even if cached (default: false)
+### Database Queries
 
 #### `query_database`
 Execute SQL queries against your database using dbt's ref() and source() functions.

@@ -10,6 +10,9 @@ if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+# Resource Discovery Tests
+
+
 def test_get_resource_node_model(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_node with a model resource type filter."""
     assert jaffle_shop_server.manifest is not None
@@ -66,6 +69,75 @@ def test_get_resource_node_invalid_type(jaffle_shop_server: "DbtCoreMcpServer") 
     assert jaffle_shop_server.manifest is not None
     with pytest.raises(ValueError, match="Invalid resource_type"):
         jaffle_shop_server.manifest.get_resource_node("customers", "invalid_type")
+
+
+def test_get_resource_info_with_compiled_sql(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+    """Test get_resource_info includes compiled SQL for models when available in manifest."""
+    assert jaffle_shop_server.manifest is not None
+
+    # Get resource info for a model - check if compiled SQL is available
+    result = jaffle_shop_server.manifest.get_resource_info(
+        name="customers",
+        resource_type="model",
+        include_compiled_sql=True
+    )
+
+    assert result["name"] == "customers"
+    assert result["resource_type"] == "model"
+    assert "compiled_sql" in result
+    assert "compiled_sql_cached" in result
+    
+    # The compiled SQL may be None if not yet compiled, which is fine
+    # The test is verifying the structure exists and the logic works
+    if result["compiled_sql"] is not None:
+        # If it's there, verify it's compiled (no Jinja)
+        assert "{{" not in result["compiled_sql"]
+        assert "jaffle_shop" in result["compiled_sql"] or "main" in result["compiled_sql"]
+        assert result["compiled_sql_cached"] is True
+    else:
+        # Not compiled yet - should indicate it's not cached
+        assert result["compiled_sql_cached"] is False
+
+
+def test_get_resource_info_skip_compiled_sql(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+    """Test get_resource_info can skip compiled SQL with include_compiled_sql=False."""
+    assert jaffle_shop_server.manifest is not None
+
+    result = jaffle_shop_server.manifest.get_resource_info(
+        name="customers",
+        resource_type="model",
+        include_compiled_sql=False
+    )
+
+    assert result["name"] == "customers"
+    assert result["resource_type"] == "model"
+    assert "compiled_sql" not in result
+
+
+def test_get_resource_info_compiled_sql_only_for_models(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+    """Test get_resource_info only includes compiled SQL for models, not sources/seeds."""
+    assert jaffle_shop_server.manifest is not None
+
+    # Test with source - should not have compiled_sql even if requested
+    source_result = jaffle_shop_server.manifest.get_resource_info(
+        name="jaffle_shop.customers",
+        resource_type="source",
+        include_compiled_sql=True
+    )
+    assert source_result["resource_type"] == "source"
+    assert "compiled_sql" not in source_result
+
+    # Test with seed - should not have compiled_sql even if requested
+    seed_result = jaffle_shop_server.manifest.get_resource_info(
+        name="raw_customers",
+        resource_type="seed",
+        include_compiled_sql=True
+    )
+    assert seed_result["resource_type"] == "seed"
+    assert "compiled_sql" not in seed_result
+
+
+# List Resources Tests
 
 
 def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:

@@ -288,6 +288,60 @@ class ManifestLoader:
                 "message": f"Found {len(matches)} resources named '{name}'. Returning all matches for context.",
             }
 
+    def get_resource_info(
+        self,
+        name: str,
+        resource_type: str | None = None,
+        include_database_schema: bool = True,
+        include_compiled_sql: bool = True,
+    ) -> dict[str, Any]:
+        """Get detailed resource information with optional enrichments.
+
+        This method extends get_resource_node() with optional enrichments:
+        - include_database_schema: Query actual database schema
+        - include_compiled_sql: Include compiled SQL (models only, requires compilation)
+
+        Note: This method does NOT trigger compilation. If compiled SQL is requested but
+        not available in the manifest, the 'compiled_sql' field will be None. The caller
+        (e.g., server tool) is responsible for triggering compilation if needed.
+
+        Args:
+            name: Resource name
+            resource_type: Optional resource type filter
+            include_database_schema: Include database schema information (default: True)
+            include_compiled_sql: Include compiled SQL for models (default: True)
+
+        Returns:
+            Resource dictionary with optional enrichments
+        """
+        result = self.get_resource_node(name, resource_type)
+
+        # Handle multiple matches case - return as-is
+        if result.get("multiple_matches"):
+            return result
+
+        # Single match - enrich with additional data if requested
+        node_type = result.get("resource_type")
+
+        # Create a copy without heavy fields
+        result_copy = dict(result)
+        result_copy.pop("raw_code", None)
+        result_copy.pop("compiled_code", None)
+
+        # Include compiled SQL for models if requested and available
+        if include_compiled_sql and node_type == "model":
+            compiled_code = result.get("compiled_code")
+
+            if compiled_code:
+                result_copy["compiled_sql"] = compiled_code
+                result_copy["compiled_sql_cached"] = True
+            else:
+                # Not compiled yet - set to None to indicate it's not available
+                result_copy["compiled_sql"] = None
+                result_copy["compiled_sql_cached"] = False
+
+        return result_copy
+
     def get_project_info(self) -> dict[str, Any]:
         """
         Get high-level project information from the manifest.
