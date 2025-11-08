@@ -159,6 +159,44 @@ For the impatient who want the latest features immediately:
 
 This downloads and installs directly from GitHub every time - always bleeding edge!
 
+### Optional Configuration
+
+#### Command Timeout
+
+By default, dbt commands have no timeout (they can run as long as needed). For complex models that take a long time to compile, you can set a timeout or explicitly disable it:
+
+```json
+{
+  "servers": {
+    "dbt-core": {
+      "command": "uvx",
+      "args": [
+        "dbt-core-mcp",
+        "--dbt-command-timeout", "300"  // 5 minutes, or use 0 for no timeout (default)
+      ]
+    }
+  }
+}
+```
+
+#### Project Directory
+
+The server automatically detects your dbt project from the workspace root. If your dbt project is in a subdirectory or you need to specify a different location, use `--project-dir` with either a relative or absolute path:
+
+```json
+{
+  "servers": {
+    "dbt-core": {
+      "command": "uvx",
+      "args": [
+        "dbt-core-mcp",
+        "--project-dir", "path/to/dbt/project"  // relative or absolute path
+      ]
+    }
+  }
+}
+```
+
 ## Requirements
 
 - **dbt Core**: Version 1.9.0 or higher

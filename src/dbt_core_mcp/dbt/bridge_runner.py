@@ -26,7 +26,7 @@ class BridgeRunner:
     from dbtRunner's structured results.
     """
 
-    def __init__(self, project_dir: Path, python_command: list[str]):
+    def __init__(self, project_dir: Path, python_command: list[str], timeout: float | None = None):
         """
         Initialize the bridge runner.
 
@@ -34,9 +34,11 @@ class BridgeRunner:
             project_dir: Path to the DBT project directory
             python_command: Command to run Python in the user's environment
                           (e.g., ['uv', 'run', 'python'] or ['/path/to/venv/bin/python'])
+            timeout: Timeout in seconds for DBT commands (default: None for no timeout)
         """
         self.project_dir = project_dir.resolve()  # Ensure absolute path
         self.python_command = python_command
+        self.timeout = timeout
         self._target_dir = self.project_dir / "target"
         self._project_config: dict[str, Any] | None = None  # Lazy-loaded project configuration
         self._project_config_mtime: float | None = None  # Track last modification time
@@ -116,7 +118,7 @@ class BridgeRunner:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=60.0,  # 60 second timeout to prevent indefinite hangs
+                timeout=self.timeout,  # None = no timeout (default), or user-specified timeout
                 stdin=subprocess.DEVNULL,  # Ensure subprocess doesn't wait for input
             )
             logger.info(f"Subprocess completed with return code: {result.returncode}")
@@ -151,8 +153,9 @@ class BridgeRunner:
                 )
 
         except subprocess.TimeoutExpired:
-            logger.error(f"DBT command timed out after 60 seconds: {args}")
-            return DbtRunnerResult(success=False, exception=RuntimeError("DBT command timed out after 60 seconds"))
+            timeout_msg = f"DBT command timed out after {self.timeout} seconds: {args}"
+            logger.error(timeout_msg)
+            return DbtRunnerResult(success=False, exception=RuntimeError(f"DBT command timed out after {self.timeout} seconds"))
         except Exception as e:
             logger.exception(f"Error executing DBT command: {e}")
             return DbtRunnerResult(success=False, exception=e)

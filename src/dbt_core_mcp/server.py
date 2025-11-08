@@ -33,12 +33,13 @@ class DBTCoreMCPServer:
     Provides tools for interacting with DBT projects.
     """
 
-    def __init__(self, project_dir: Optional[str] = None) -> None:
+    def __init__(self, project_dir: Optional[str] = None, timeout: Optional[float] = None) -> None:
         """Initialize the server.
 
         Args:
             project_dir: Optional path to DBT project directory. If not provided,
                         automatically detects from MCP workspace roots or falls back to cwd.
+            timeout: Optional timeout in seconds for DBT commands (default: None for no timeout).
         """
         # FastMCP initialization with recommended arguments
         from . import __version__
@@ -69,6 +70,7 @@ class DBTCoreMCPServer:
         self._explicit_project_dir = Path(project_dir) if project_dir else None
         self.project_dir: Path | None = None
         self.profiles_dir = os.path.expanduser("~/.dbt")
+        self.timeout = timeout
 
         # Initialize DBT components (lazy-loaded)
         self.runner: BridgeRunner | None = None
@@ -232,7 +234,7 @@ class DBTCoreMCPServer:
             logger.info(f"Detected adapter: {self.adapter_type}")
 
             # Create bridge runner
-            self.runner = BridgeRunner(self.project_dir, python_cmd)
+            self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout)
 
         # Check if we need to parse
         should_parse = force or self._is_manifest_stale()
@@ -1594,15 +1596,16 @@ class DBTCoreMCPServer:
         self.app.run(show_banner=False)
 
 
-def create_server(project_dir: Optional[str] = None) -> DBTCoreMCPServer:
+def create_server(project_dir: Optional[str] = None, timeout: Optional[float] = None) -> DBTCoreMCPServer:
     """Create a new DBT Core MCP server instance.
 
     Args:
         project_dir: Optional path to DBT project directory.
                      If not provided, automatically detects from MCP workspace roots
                      or falls back to current working directory.
+        timeout: Optional timeout in seconds for DBT commands (default: None for no timeout).
 
     Returns:
         DBTCoreMCPServer instance
     """
-    return DBTCoreMCPServer(project_dir=project_dir)
+    return DBTCoreMCPServer(project_dir=project_dir, timeout=timeout)

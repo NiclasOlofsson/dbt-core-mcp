@@ -7,11 +7,14 @@
         "dbt-core-mcp",
         "--project-dir",
         "examples/jaffle_shop"
+        // Uncomment to set a timeout for DBT commands (in seconds, use 0 for no timeout)
+        // "--dbt-command-timeout",
+        // "300"
       ],
       "cwd": ".",
       "env": {
         // AI: Increment this value (1, 2, 3, etc.) to force VS Code to restart the MCP server for testing
-        "_RESTART": "2"
+        "_RESTART": "5"
       }
     }
   }

@@ -67,6 +67,13 @@ def parse_arguments() -> argparse.Namespace:
         help="Optional: Path to DBT project directory (auto-detects from workspace if not provided)",
     )
 
+    parser.add_argument(
+        "--dbt-command-timeout",
+        type=float,
+        default=None,
+        help="Timeout in seconds for DBT commands (default: None for no timeout; 0 or negative values also mean no timeout)",
+    )
+
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     return parser.parse_args()
@@ -82,7 +89,9 @@ def main() -> None:
     logging.info(f"Running version {__version__}")
 
     # Pass project_dir if specified, otherwise let server auto-detect from workspace roots
-    server = create_server(project_dir=args.project_dir)
+    # Treat timeout <= 0 as None (no timeout)
+    timeout = args.dbt_command_timeout if args.dbt_command_timeout and args.dbt_command_timeout > 0 else None
+    server = create_server(project_dir=args.project_dir, timeout=timeout)
 
     try:
         server.run()
