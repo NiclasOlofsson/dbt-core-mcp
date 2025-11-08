@@ -17,6 +17,12 @@ jobs:
         with:
           python-version: '3.11'
       - uses: astral-sh/setup-uv@v4
+      - name: Sync dependencies
+        run: uv sync --group dev
+      - name: Setup jaffle_shop example
+        run: |
+          cd examples/jaffle_shop
+          uv sync
       - name: Bump version (patch)
         id: version_bump
         run: |
@@ -36,14 +42,11 @@ jobs:
           git push --follow-tags
       - name: Build package
         run: uv build --no-sources
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Type check
+        run: uv run pyright src tests
       - name: Test
-        run: |
-          uv sync --group dev
-          cd examples/jaffle_shop
-          uv sync
-          cd ../..
-          uv run ruff check src tests
-          uv run pyright src tests
-          uv run pytest
+        run: uv run pytest
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
