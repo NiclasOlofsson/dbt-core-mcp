@@ -839,6 +839,80 @@ class DbtCoreMcpServer:
             "elapsed_time": run_results.get("elapsed_time"),
         }
 
+    async def toolImpl_build_models(
+        self,
+        select: str | None = None,
+        exclude: str | None = None,
+        modified_only: bool = False,
+        modified_downstream: bool = False,
+        full_refresh: bool = False,
+        fail_fast: bool = False,
+    ) -> dict[str, Any]:
+        """Implementation of build_models tool."""
+        # Validate: can't use both smart and manual selection
+        if (modified_only or modified_downstream) and select:
+            raise ValueError("Cannot use both modified_* flags and select parameter")
+
+        # Build command args
+        args = ["build"]
+
+        # Handle smart selection
+        # Use relative path since DBT runs from project_dir
+        assert self.project_dir is not None
+        state_dir = self.project_dir / "target" / "state_last_run"
+
+        if modified_only or modified_downstream:
+            if not state_dir.exists():
+                return {
+                    "status": "error",
+                    "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
+                }
+
+            selector = "state:modified+" if modified_downstream else "state:modified"
+            # Use relative path for --state since cwd=project_dir
+            args.extend(["-s", selector, "--state", "target/state_last_run"])
+
+        # Manual selection
+        elif select:
+            args.extend(["-s", select])
+
+        if exclude:
+            args.extend(["--exclude", exclude])
+
+        if full_refresh:
+            args.append("--full-refresh")
+
+        if fail_fast:
+            args.append("--fail-fast")
+
+        # Execute
+        logger.info(f"Running DBT build with args: {args}")
+        result = await self.runner.invoke(args)  # type: ignore
+
+        if not result.success:
+            error_msg = str(result.exception) if result.exception else "Build failed"
+            return {
+                "status": "error",
+                "message": error_msg,
+                "command": " ".join(args),
+            }
+
+        # Save state on success for next modified run
+        if result.success and self.project_dir:
+            state_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = self.runner.get_manifest_path()  # type: ignore
+            shutil.copy(manifest_path, state_dir / "manifest.json")
+
+        # Parse run_results.json for details
+        run_results = self._parse_run_results()
+
+        return {
+            "status": "success",
+            "command": " ".join(args),
+            "results": run_results.get("results", []),
+            "elapsed_time": run_results.get("elapsed_time"),
+        }
+
     def _register_tools(self) -> None:
         """Register all dbt tools."""
 
@@ -1169,69 +1243,7 @@ class DbtCoreMcpServer:
                 Build results with status, models run/tested, and timing info
             """
             await self._ensure_initialized_with_context(ctx)
-
-            # Validate: can't use both smart and manual selection
-            if (modified_only or modified_downstream) and select:
-                raise ValueError("Cannot use both modified_* flags and select parameter")
-
-            # Build command args
-            args = ["build"]
-
-            # Handle smart selection
-            # Use relative path since DBT runs from project_dir
-            state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
-
-            if modified_only or modified_downstream:
-                if not state_dir.exists():
-                    return {
-                        "status": "error",
-                        "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
-                    }
-
-                selector = "state:modified+" if modified_downstream else "state:modified"
-                # Use relative path for --state since cwd=project_dir
-                args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-            # Manual selection
-            elif select:
-                args.extend(["-s", select])
-
-            if exclude:
-                args.extend(["--exclude", exclude])
-
-            if full_refresh:
-                args.append("--full-refresh")
-
-            if fail_fast:
-                args.append("--fail-fast")
-
-            # Execute
-            logger.info(f"Running DBT build with args: {args}")
-            result = await self.runner.invoke(args)  # type: ignore
-
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "Build failed"
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "command": " ".join(args),
-                }
-
-            # Save state on success for next modified run
-            if result.success and self.project_dir:
-                state_dir.mkdir(parents=True, exist_ok=True)
-                manifest_path = self.runner.get_manifest_path()  # type: ignore
-                shutil.copy(manifest_path, state_dir / "manifest.json")
-
-            # Parse run_results.json for details
-            run_results = self._parse_run_results()
-
-            return {
-                "status": "success",
-                "command": " ".join(args),
-                "results": run_results.get("results", []),
-                "elapsed_time": run_results.get("elapsed_time"),
-            }
+            return await self.toolImpl_build_models(select, exclude, modified_only, modified_downstream, full_refresh, fail_fast)
 
         @self.app.tool()
         async def seed_data(
