@@ -645,7 +645,7 @@ class DbtCoreMcpServer:
 
         return info
 
-    async def toolImpl_query_database(self, sql: str) -> dict[str, Any]:
+    async def toolImpl_query_database(self, sql: str, output_file: str | None = None, output_format: str = "json") -> dict[str, Any]:
         """Implementation for query_database tool."""
         # Execute query using dbt show --inline
         result = await self.runner.invoke_query(sql)  # type: ignore
@@ -653,8 +653,8 @@ class DbtCoreMcpServer:
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Unknown error"
             response = {
-                "error": error_msg,
                 "status": "failed",
+                "error": error_msg,
             }
             # Include dbt output for debugging
             if result.stdout:
@@ -675,8 +675,8 @@ class DbtCoreMcpServer:
             json_match = re.search(r'\{\s*"show"\s*:\s*\[', output)
             if not json_match:
                 return {
-                    "error": "No JSON output found in dbt show response",
                     "status": "failed",
+                    "error": "No JSON output found in dbt show response",
                 }
 
             # Use JSONDecoder to parse just the first complete JSON object
@@ -685,15 +685,92 @@ class DbtCoreMcpServer:
             data, _ = decoder.raw_decode(output, json_match.start())
 
             if "show" in data:
-                return {
-                    "rows": data["show"],
-                    "row_count": len(data["show"]),
-                    "status": "success",
-                }
+                rows = data["show"]
+                row_count = len(rows)
+
+                # Handle different output formats
+                if output_format in ("csv", "tsv"):
+                    # Convert to CSV/TSV format
+                    import csv
+                    import io
+
+                    delimiter = "\t" if output_format == "tsv" else ","
+                    csv_buffer = io.StringIO()
+
+                    if rows:
+                        writer = csv.DictWriter(csv_buffer, fieldnames=rows[0].keys(), delimiter=delimiter)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                        csv_string = csv_buffer.getvalue()
+                    else:
+                        csv_string = ""
+
+                    if output_file:
+                        # Save to file
+                        from pathlib import Path
+
+                        output_path = Path(output_file)
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                        with open(output_path, "w", newline="") as f:
+                            f.write(csv_string)
+
+                        # Get file size
+                        file_size_bytes = output_path.stat().st_size
+                        file_size_kb = file_size_bytes / 1024
+
+                        return {
+                            "status": "success",
+                            "row_count": row_count,
+                            "format": output_format,
+                            "saved_to": str(output_path),
+                            "file_size_kb": round(file_size_kb, 2),
+                        }
+                    else:
+                        # Return CSV/TSV inline
+                        return {
+                            "status": "success",
+                            "row_count": row_count,
+                            "format": output_format,
+                            output_format: csv_string,
+                        }
+                else:
+                    # JSON format (default)
+                    if output_file:
+                        # Ensure directory exists
+                        from pathlib import Path
+
+                        output_path = Path(output_file)
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                        # Write rows to file
+                        with open(output_path, "w") as f:
+                            json.dump(rows, f, indent=2)
+
+                        # Get file size
+                        file_size_bytes = output_path.stat().st_size
+                        file_size_kb = file_size_bytes / 1024
+
+                        # Return metadata with preview
+                        return {
+                            "status": "success",
+                            "row_count": row_count,
+                            "saved_to": str(output_path),
+                            "file_size_kb": round(file_size_kb, 2),
+                            "columns": list(rows[0].keys()) if rows else [],
+                            "preview": rows[:3],  # First 3 rows as preview
+                        }
+                    else:
+                        # Return all rows inline
+                        return {
+                            "status": "success",
+                            "row_count": row_count,
+                            "rows": rows,
+                        }
             else:
                 return {
-                    "error": "Unexpected JSON format from dbt show",
                     "status": "failed",
+                    "error": "Unexpected JSON format from dbt show",
                     "data": data,
                 }
 
@@ -1439,7 +1516,7 @@ Do you want to proceed?"""
             return await self.toolImpl_analyze_impact(name, resource_type)
 
         @self.app.tool()
-        async def query_database(ctx: Context, sql: str) -> dict[str, Any]:
+        async def query_database(ctx: Context, sql: str, output_file: str | None = None, output_format: str = "json") -> dict[str, Any]:
             """Execute a SQL query against the dbt project's database.
 
             BEST PRACTICES:
@@ -1457,16 +1534,34 @@ Do you want to proceed?"""
             - Use GROUP BY for categorization within the query
             - Always ask: "Can SQL answer this question directly?" before returning data
 
+            LARGE RESULT HANDLING:
+            - For queries returning many rows (>100), use output_file parameter to save results to disk
+            - This prevents context window overflow and improves performance
+            - The tool returns metadata + preview instead of full results when output_file is used
+            - Example: query_database(sql="SELECT * FROM large_table", output_file="temp_auto/results.json")
+
+            OUTPUT FORMATS:
+            - json (default): Returns data as JSON array of objects
+            - csv: Returns comma-separated values with header row
+            - tsv: Returns tab-separated values with header row
+            - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
+
             Args:
                 sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
                      For exploratory queries, include LIMIT. For aggregations/counts, omit it.
+                output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
+                            If provided, only metadata is returned (no preview for CSV/TSV).
+                            If omitted, all data is returned inline (may consume large context).
+                output_format: Output format - "json" (default), "csv", or "tsv"
 
             Returns:
-                Query results with rows in JSON format
+                JSON inline: {"status": "success", "row_count": N, "rows": [...]}
+                JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
+                CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
+                CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_query_database(sql)
-
+            return await self.toolImpl_query_database(sql, output_file, output_format)
         @self.app.tool()
         async def run_models(
             ctx: Context,

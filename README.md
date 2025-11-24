@@ -390,25 +390,30 @@ Analyze the blast radius of changing any resource - shows all downstream depende
 ### Database Queries
 
 #### `query_database`
-Execute SQL queries against your database using dbt's ref() and source() functions.
+Execute SQL queries against your database using dbt's ref() and source() functions. Results can be displayed inline or exported to CSV/TSV files for analysis.
 
 >&nbsp;  
 >You: *"Show me 10 rows from the customers model"*  
->Copilot: *Executes SELECT * FROM {{ ref('customers') }} LIMIT 10*
+>Copilot: *Executes SELECT * FROM {{ ref('customers') }} LIMIT 10 and displays results*
 >
 >You: *"Count the orders in the staging table"*  
->Copilot: *Runs SELECT COUNT(*) and returns result*
+>Copilot: *Runs SELECT COUNT(*) and shows the count*
 >
 >You: *"What's the schema of stg_payments?"*  
 >Copilot: *Queries column information and displays schema*
 >
->You: *"Query the raw orders source and show me recent records"*  
->Copilot: *Uses {{ source() }} function to query and filter results*  
+>You: *"Export customers data to CSV for analysis"*  
+>Copilot: *Saves query results to a CSV file you can open in Excel*
+>
+>You: *"Save all orders to a TSV file"*  
+>Copilot: *Exports data in tab-separated format for import into other tools*  
 >&nbsp;
 
-**Parameters:**
-- `sql`: SQL query with optional {{ ref() }} and {{ source() }} functions
-- `limit`: Maximum rows to return (optional, defaults to unlimited)
+**What you can do:**
+- Query any model using `{{ ref('model_name') }}` or source using `{{ source('source_name', 'table_name') }}`
+- Get results displayed directly in the conversation (good for small result sets)
+- Export to CSV or TSV files (perfect for large datasets or further analysis in Excel/other tools)
+- Automatically handles large results without overwhelming the conversation
 
 ### Execution Tools
 
