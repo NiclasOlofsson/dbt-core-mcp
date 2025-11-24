@@ -412,18 +412,22 @@ class DbtCoreMcpServer:
             logger.warning(f"Failed to compare schemas: {e}")
             return {}
 
-    async def _get_table_schema_from_db(self, model_name: str) -> list[dict[str, Any]]:
+    async def _get_table_schema_from_db(self, model_name: str, source_name: str | None = None) -> list[dict[str, Any]]:
         """Get full table schema from database using DESCRIBE.
 
         Args:
-            model_name: Name of the model
+            model_name: Name of the model/table
+            source_name: If provided, treat as source and use source() instead of ref()
 
         Returns:
             List of column dictionaries with details (column_name, column_type, null, etc.)
             Empty list if query fails or table doesn't exist
         """
         try:
-            sql = f"DESCRIBE {{{{ ref('{model_name}') }}}}"
+            if source_name:
+                sql = f"DESCRIBE {{{{ source('{source_name}', '{model_name}') }}}}"
+            else:
+                sql = f"DESCRIBE {{{{ ref('{model_name}') }}}}"
             result = await self.runner.invoke_query(sql)  # type: ignore
 
             if not result.success or not result.stdout:
@@ -531,6 +535,17 @@ class DbtCoreMcpServer:
 
             # Handle multiple matches case
             if result.get("multiple_matches"):
+                # Enrich each match with database schema if requested
+                if include_database_schema:
+                    matches = result.get("matches", [])
+                    for match in matches:
+                        node_type = match.get("resource_type")
+                        if node_type in ("model", "seed", "snapshot", "source"):
+                            resource_name = match.get("name")
+                            source_name = match.get("source_name") if node_type == "source" else None
+                            schema = await self._get_table_schema_from_db(resource_name, source_name)
+                            if schema:
+                                match["database_columns"] = schema
                 return result
 
             # Single match - check if we need to trigger compilation
@@ -554,9 +569,11 @@ class DbtCoreMcpServer:
                         )
 
             # Query database schema for applicable resource types
-            if include_database_schema and node_type in ("model", "seed", "snapshot"):
+            if include_database_schema and node_type in ("model", "seed", "snapshot", "source"):
                 resource_name = result.get("name", name)
-                schema = await self._get_table_schema_from_db(resource_name)
+                # For sources, pass source_name to use source() instead of ref()
+                source_name = result.get("source_name") if node_type == "source" else None
+                schema = await self._get_table_schema_from_db(resource_name, source_name)
                 if schema:
                     result["database_columns"] = schema
 
@@ -1306,7 +1323,7 @@ Do you want to proceed?"""
                     - "analysis": Ad-hoc analysis queries
                     - None: Auto-detect (searches all types)
                 include_database_schema: If True (default), query actual database table schema
-                    for models/seeds/snapshots and add as 'database_columns' field
+                    for models/seeds/snapshots/sources and add as 'database_columns' field
                 include_compiled_sql: If True (default), include compiled SQL with Jinja resolved
                     ({{ ref() }}, {{ source() }} → actual table names). Only applicable to models.
                     Will trigger dbt compile if not already compiled. Set to False to skip compilation.
