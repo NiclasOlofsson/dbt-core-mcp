@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_seed_all(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test loading all seed files."""
     result = await jaffle_shop_server.toolImpl_seed_data()
@@ -26,6 +27,7 @@ async def test_seed_all(jaffle_shop_server: "DbtCoreMcpServer"):
         assert seed_result["status"] in ["success", "pass"]
 
 
+@pytest.mark.asyncio
 async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test loading a specific seed file."""
     result = await jaffle_shop_server.toolImpl_seed_data(select="raw_customers")
@@ -39,12 +41,14 @@ async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     assert len(results) == 1
 
 
+@pytest.mark.asyncio
 async def test_seed_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining modified_only and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
         await jaffle_shop_server.toolImpl_seed_data(select="raw_customers", modified_only=True)
 
 
+@pytest.mark.asyncio
 async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that modified_only requires previous state."""
     # Remove state if it exists
@@ -61,6 +65,7 @@ async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcp
     assert "No previous seed state found" in result["message"]
 
 
+@pytest.mark.asyncio
 async def test_seed_creates_state(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that successful seed creates state for modified runs."""
     assert jaffle_shop_server.project_dir is not None
@@ -74,6 +79,7 @@ async def test_seed_creates_state(jaffle_shop_server: "DbtCoreMcpServer"):
     assert (state_dir / "manifest.json").exists()
 
 
+@pytest.mark.asyncio
 async def test_seed_full_refresh(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test full_refresh flag is passed to dbt."""
     result = await jaffle_shop_server.toolImpl_seed_data(full_refresh=True)
@@ -82,6 +88,7 @@ async def test_seed_full_refresh(jaffle_shop_server: "DbtCoreMcpServer"):
     assert "--full-refresh" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_seed_show(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test show flag is passed to dbt."""
     result = await jaffle_shop_server.toolImpl_seed_data(show=True)
@@ -90,6 +97,7 @@ async def test_seed_show(jaffle_shop_server: "DbtCoreMcpServer"):
     assert "--show" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_seed_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific seeds."""
     result = await jaffle_shop_server.toolImpl_seed_data(exclude="raw_customers")

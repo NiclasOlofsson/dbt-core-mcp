@@ -5,11 +5,13 @@ These tests verify that the server correctly detects when a manifest is stale
 and needs regeneration, versus when it can reuse an existing manifest.
 """
 
+import pytest
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+@pytest.mark.asyncio
 async def test_manifest_not_stale_when_exists_and_fresh() -> None:
     """Test that staleness check returns False when manifest exists and is fresh."""
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -33,6 +35,7 @@ async def test_manifest_not_stale_when_exists_and_fresh() -> None:
     assert not is_stale, "Manifest should not be stale when it exists and is fresh"
 
 
+@pytest.mark.asyncio
 async def test_manifest_stale_when_missing() -> None:
     """Test that staleness check returns True when manifest doesn't exist."""
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -48,6 +51,7 @@ async def test_manifest_stale_when_missing() -> None:
         assert is_stale, "Manifest should be stale when it doesn't exist"
 
 
+@pytest.mark.asyncio
 async def test_manifest_stale_when_project_file_newer(tmp_path: Path) -> None:
     """Test that staleness check returns True when dbt_project.yml is newer."""
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -86,6 +90,7 @@ model-paths: ["models"]
     assert is_stale, "Manifest should be stale when dbt_project.yml is newer"
 
 
+@pytest.mark.asyncio
 async def test_manifest_stale_when_model_file_newer(tmp_path: Path) -> None:
     """Test that staleness check returns True when a model file is newer."""
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -130,6 +135,7 @@ model-paths: ["models"]
     assert is_stale, "Manifest should be stale when model file is newer"
 
 
+@pytest.mark.asyncio
 async def test_staleness_check_before_runner_initialized() -> None:
     """Test that _ensure_initialized_with_context doesn't parse when manifest is fresh.
 
@@ -181,6 +187,7 @@ async def test_staleness_check_before_runner_initialized() -> None:
     assert not parse_called, "dbt parse should not be called when manifest is fresh"
 
 
+@pytest.mark.asyncio
 async def test_staleness_check_independent_of_runner_state() -> None:
     """Verify that _is_manifest_stale() checks timestamps regardless of runner state.
 
@@ -208,6 +215,7 @@ async def test_staleness_check_independent_of_runner_state() -> None:
     assert is_stale is False, "Should return False when manifest is fresh, regardless of runner state"
 
 
+@pytest.mark.asyncio
 async def test_integration_parse_triggered_when_file_changes(tmp_path: Path) -> None:
     """Integration test: verify parse is triggered when source files change."""
     from unittest.mock import AsyncMock
@@ -285,6 +293,7 @@ test_profile:
         assert parse_count == 1, "Should parse when model file is newer than manifest"
 
 
+@pytest.mark.asyncio
 async def test_integration_parse_skipped_on_subsequent_calls(tmp_path: Path) -> None:
     """Integration test: verify parse is skipped on subsequent calls when nothing changed."""
     from unittest.mock import AsyncMock

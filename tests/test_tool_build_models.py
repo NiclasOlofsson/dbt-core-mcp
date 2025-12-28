@@ -3,12 +3,13 @@
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     """Jaffle shop server with seeds already loaded."""
     # Load seeds first since build depends on them
@@ -16,6 +17,7 @@ async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     return jaffle_shop_server
 
 
+@pytest.mark.asyncio
 async def test_build_all_models(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test building all models (run + test in DAG order)."""
     result = await seeded_jaffle_shop_server.toolImpl_build_models(ctx=None)
@@ -34,6 +36,7 @@ async def test_build_all_models(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
         assert r["status"] in ["success", "pass"]
 
 
+@pytest.mark.asyncio
 async def test_build_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test building a specific model."""
     result = await seeded_jaffle_shop_server.toolImpl_build_models(ctx=None, select="customers")
@@ -43,12 +46,14 @@ async def test_build_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServe
     assert "-s customers" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_build_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining modified_only and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
         await jaffle_shop_server.toolImpl_build_models(ctx=None, select="customers", modified_only=True)
 
 
+@pytest.mark.asyncio
 async def test_build_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that modified_only requires previous state."""
     # Remove state if it exists
@@ -65,6 +70,7 @@ async def test_build_modified_only_requires_state(jaffle_shop_server: "DbtCoreMc
     assert "No previous run state found" in result["message"]
 
 
+@pytest.mark.asyncio
 async def test_build_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that successful build creates state for modified runs."""
     assert seeded_jaffle_shop_server.project_dir is not None
@@ -78,6 +84,7 @@ async def test_build_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer"
     assert (state_dir / "manifest.json").exists()
 
 
+@pytest.mark.asyncio
 async def test_build_fail_fast(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test fail_fast flag is passed to dbt."""
     result = await seeded_jaffle_shop_server.toolImpl_build_models(ctx=None, fail_fast=True)
@@ -86,6 +93,7 @@ async def test_build_fail_fast(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     assert "--fail-fast" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_build_exclude(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific models."""
     result = await seeded_jaffle_shop_server.toolImpl_build_models(ctx=None, exclude="customers")

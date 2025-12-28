@@ -4,10 +4,12 @@ Tests for toolImpl_list_resources.
 
 from typing import TYPE_CHECKING
 
+import pytest
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test listing all resources without filter."""
     result = await jaffle_shop_server.toolImpl_list_resources()
@@ -21,6 +23,7 @@ async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> Non
     assert "source" in resource_types
 
 
+@pytest.mark.asyncio
 async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by model resource type."""
     result = await jaffle_shop_server.toolImpl_list_resources(resource_type="model")
@@ -37,6 +40,7 @@ async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServe
     assert "customers" in model_names
 
 
+@pytest.mark.asyncio
 async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by source resource type."""
     result = await jaffle_shop_server.toolImpl_list_resources(resource_type="source")
@@ -53,6 +57,7 @@ async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServ
     assert "customers" in source_names or "orders" in source_names
 
 
+@pytest.mark.asyncio
 async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by seed resource type."""
     result = await jaffle_shop_server.toolImpl_list_resources(resource_type="seed")
@@ -69,6 +74,7 @@ async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer
     assert "raw_customers" in seed_names or "raw_orders" in seed_names
 
 
+@pytest.mark.asyncio
 async def test_list_resources_consistent_structure(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that all resources have consistent structure."""
     result = await jaffle_shop_server.toolImpl_list_resources()
@@ -85,6 +91,7 @@ async def test_list_resources_consistent_structure(jaffle_shop_server: "DbtCoreM
         assert "tags" in resource
 
 
+@pytest.mark.asyncio
 async def test_list_resources_invalid_type(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that invalid resource type raises ValueError."""
     import pytest

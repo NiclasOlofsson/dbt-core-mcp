@@ -4,10 +4,12 @@ Tests for toolImpl_get_resource_info.
 
 from typing import TYPE_CHECKING
 
+import pytest
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_with_compiled_sql(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info tool includes compiled SQL and triggers compilation if needed."""
     # Call the actual tool implementation (not just manifest method)
@@ -25,6 +27,7 @@ async def test_get_resource_info_with_compiled_sql(jaffle_shop_server: "DbtCoreM
     assert "jaffle_shop" in result["compiled_sql"] or "main" in result["compiled_sql"], "Expected schema reference in compiled SQL"
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_skip_compiled_sql(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info tool can skip compiled SQL with include_compiled_sql=False."""
     result = await jaffle_shop_server.toolImpl_get_resource_info(name="customers", resource_type="model", include_compiled_sql=False)
@@ -34,6 +37,7 @@ async def test_get_resource_info_skip_compiled_sql(jaffle_shop_server: "DbtCoreM
     assert "compiled_sql" not in result
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_compiled_sql_only_for_models(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info tool only includes compiled SQL for models, not sources/seeds."""
     # Test with source - should not have compiled_sql even if requested
@@ -47,6 +51,7 @@ async def test_get_resource_info_compiled_sql_only_for_models(jaffle_shop_server
     assert "compiled_sql" not in seed_result
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_uses_cached_compilation(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that get_resource_info doesn't recompile when compiled SQL is already cached."""
     # First call - triggers compilation (manifest lacks compiled_code initially)
@@ -64,6 +69,7 @@ async def test_get_resource_info_uses_cached_compilation(jaffle_shop_server: "Db
     assert result2["compiled_sql"] == compiled_sql_1, "Second call should return identical SQL (cached, not recompiled)"
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_includes_database_schema_for_sources(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info includes database_columns for sources when include_database_schema=True."""
     result = await jaffle_shop_server.toolImpl_get_resource_info(
@@ -86,6 +92,7 @@ async def test_get_resource_info_includes_database_schema_for_sources(jaffle_sho
     assert "col_name" in first_col or "column_name" in first_col or "Field" in first_col, "Expected column name field in schema"
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_skips_database_schema_when_disabled(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info skips database_columns when include_database_schema=False."""
     result = await jaffle_shop_server.toolImpl_get_resource_info(
@@ -98,6 +105,7 @@ async def test_get_resource_info_skips_database_schema_when_disabled(jaffle_shop
     assert "database_columns" not in result, "Expected no database_columns when include_database_schema=False"
 
 
+@pytest.mark.asyncio
 async def test_get_resource_info_multiple_matches_with_database_schema(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_resource_info enriches all matches with database_columns when multiple resources match."""
     # Query "customers" without resource_type - should match both source and model

@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running all tests."""
     result = await jaffle_shop_server.toolImpl_test_models(ctx=None)
@@ -26,6 +27,7 @@ async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
         assert test_result["status"] in ["pass", "success"]
 
 
+@pytest.mark.asyncio
 async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running tests for a specific model."""
     result = await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers")
@@ -39,12 +41,14 @@ async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
     assert len(results) > 0
 
 
+@pytest.mark.asyncio
 async def test_test_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining modified_only and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
         await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers", modified_only=True)
 
 
+@pytest.mark.asyncio
 async def test_test_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that modified_only requires previous state."""
     # Remove state if it exists
@@ -61,6 +65,7 @@ async def test_test_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcp
     assert "No previous run state found" in result["message"]
 
 
+@pytest.mark.asyncio
 async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that running tests uses state from previous run."""
     # First run models to create state
@@ -80,6 +85,7 @@ async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
     assert "--state target/state_last_run" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test fail_fast flag is passed to dbt."""
     result = await jaffle_shop_server.toolImpl_test_models(ctx=None, fail_fast=True)
@@ -88,6 +94,7 @@ async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
     assert "--fail-fast" in result["command"]
 
 
+@pytest.mark.asyncio
 async def test_test_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific tests."""
     result = await jaffle_shop_server.toolImpl_test_models(ctx=None, exclude="not_null*")

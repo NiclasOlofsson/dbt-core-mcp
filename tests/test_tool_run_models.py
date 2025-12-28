@@ -5,12 +5,13 @@ Tests for run_models tool.
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     """Jaffle shop server with seeds already loaded."""
     # Load seeds first since models depend on them
@@ -18,6 +19,7 @@ async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     return jaffle_shop_server
 
 
+@pytest.mark.asyncio
 async def test_run_models_all(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test running all models."""
     result = await seeded_jaffle_shop_server.toolImpl_run_models(ctx=None)
@@ -29,6 +31,7 @@ async def test_run_models_all(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> 
     assert len(result["results"]) > 0
 
 
+@pytest.mark.asyncio
 async def test_run_models_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test running a specific model."""
     result = await seeded_jaffle_shop_server.toolImpl_run_models(ctx=None, select="customers")
@@ -39,12 +42,14 @@ async def test_run_models_select_specific(seeded_jaffle_shop_server: "DbtCoreMcp
     assert len(result["results"]) >= 1
 
 
+@pytest.mark.asyncio
 async def test_run_models_invalid_selection_combination(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that using both modified_only and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
         await jaffle_shop_server.toolImpl_run_models(ctx=None, select="customers", modified_only=True)
 
 
+@pytest.mark.asyncio
 async def test_run_models_modified_only_no_state(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test modified_only without previous state returns appropriate error."""
     # Clean any existing state
@@ -61,6 +66,7 @@ async def test_run_models_modified_only_no_state(jaffle_shop_server: "DbtCoreMcp
     assert "No previous run state found" in result["message"]
 
 
+@pytest.mark.asyncio
 async def test_run_models_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that successful run creates state for next modified run."""
     # Clean state first
@@ -80,6 +86,7 @@ async def test_run_models_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpSe
     assert (state_dir / "manifest.json").exists()
 
 
+@pytest.mark.asyncio
 async def test_run_models_full_refresh(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test run with full_refresh flag."""
     result = await seeded_jaffle_shop_server.toolImpl_run_models(ctx=None, full_refresh=True)

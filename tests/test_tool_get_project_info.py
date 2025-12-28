@@ -4,10 +4,12 @@ Tests for get_project_info tool.
 
 from typing import TYPE_CHECKING
 
+import pytest
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info with dbt debug enabled (default)."""
     result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=True)
@@ -27,6 +29,7 @@ async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer
     assert "output" in result["diagnostics"]
 
 
+@pytest.mark.asyncio
 async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info without running dbt debug."""
     result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=False)
@@ -42,6 +45,7 @@ async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpSer
     assert "diagnostics" not in result
 
 
+@pytest.mark.asyncio
 async def test_get_project_info_contains_metadata(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info contains expected metadata fields."""
     result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=False)

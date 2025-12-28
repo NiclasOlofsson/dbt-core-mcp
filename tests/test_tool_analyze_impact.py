@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_model(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact for a model."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("stg_customers", "model")
@@ -26,6 +27,7 @@ async def test_analyze_impact_model(jaffle_shop_server: "DbtCoreMcpServer") -> N
     assert result["impact"]["total_affected"] >= 1
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_source(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact for a source."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("jaffle_shop.customers", "source")
@@ -38,6 +40,7 @@ async def test_analyze_impact_source(jaffle_shop_server: "DbtCoreMcpServer") -> 
     assert "source:" in result["recommendation"] or "+" in result["recommendation"]
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_seed(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact for a seed."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("raw_customers", "seed")
@@ -47,6 +50,7 @@ async def test_analyze_impact_seed(jaffle_shop_server: "DbtCoreMcpServer") -> No
     assert "dbt seed" in result["recommendation"]
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_distance_grouping(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact groups affected resources by distance."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("stg_customers", "model")
@@ -62,6 +66,7 @@ async def test_analyze_impact_distance_grouping(jaffle_shop_server: "DbtCoreMcpS
         assert all("distance" in r for r in resources)
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_models_sorted(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact sorts affected models by distance."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("stg_customers", "model")
@@ -73,6 +78,7 @@ async def test_analyze_impact_models_sorted(jaffle_shop_server: "DbtCoreMcpServe
         assert distances == sorted(distances)
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_multiple_matches(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact returns multiple_matches for ambiguous names."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("customers")  # Matches both model and source
@@ -81,12 +87,14 @@ async def test_analyze_impact_multiple_matches(jaffle_shop_server: "DbtCoreMcpSe
     assert result["match_count"] == 2
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_not_found(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact raises ValueError when resource not found."""
     with pytest.raises(ValueError, match="Impact analysis error"):
         await jaffle_shop_server.toolImpl_analyze_impact("nonexistent", "model")
 
 
+@pytest.mark.asyncio
 async def test_analyze_impact_message_levels(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test analyze_impact provides appropriate impact level messages."""
     result = await jaffle_shop_server.toolImpl_analyze_impact("customers", "model")

@@ -2,10 +2,12 @@
 
 from typing import TYPE_CHECKING
 
+import pytest
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_snapshot_all(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running all snapshots."""
     result = await jaffle_shop_server.toolImpl_snapshot_models()
@@ -24,6 +26,7 @@ async def test_snapshot_all(jaffle_shop_server: "DbtCoreMcpServer"):
         assert snapshot_result["status"] in ["success", "pass"]
 
 
+@pytest.mark.asyncio
 async def test_snapshot_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running a specific snapshot."""
     result = await jaffle_shop_server.toolImpl_snapshot_models(select="customers_snapshot")
@@ -37,6 +40,7 @@ async def test_snapshot_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     assert len(results) == 1
 
 
+@pytest.mark.asyncio
 async def test_snapshot_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific snapshots."""
     result = await jaffle_shop_server.toolImpl_snapshot_models(exclude="customers_snapshot")

@@ -2,10 +2,12 @@
 
 from typing import TYPE_CHECKING
 
+import pytest
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
+@pytest.mark.asyncio
 async def test_install_deps_no_packages(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test install_deps when no packages.yml exists (or empty)."""
     # Jaffle shop doesn't have packages.yml, so this should succeed with 0 packages
