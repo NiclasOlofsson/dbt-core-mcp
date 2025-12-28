@@ -1562,6 +1562,7 @@ Do you want to proceed?"""
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_query_database(sql, output_file, output_format)
+
         @self.app.tool()
         async def run_models(
             ctx: Context,

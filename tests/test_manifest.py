@@ -69,4 +69,3 @@ def test_get_resource_node_invalid_type(jaffle_shop_server: "DbtCoreMcpServer") 
     assert jaffle_shop_server.manifest is not None
     with pytest.raises(ValueError, match="Invalid resource_type"):
         jaffle_shop_server.manifest.get_resource_node("customers", "invalid_type")
-
