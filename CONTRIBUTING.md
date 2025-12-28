@@ -50,11 +50,14 @@ uv run pytest --cov
 ### Code Quality
 
 ```bash
-# Format code with Ruff (via uv format)
-uv run pydocstringformatter src tests && uv format
+# Lint code with Ruff
+uv run ruff check src tests
+
+# Format code with Ruff
+uv run ruff format src tests
 
 # Check formatting without applying
-uv format --check
+uv run ruff format --check src tests
 
 # Run type checking
 uv run pyright src tests
@@ -88,21 +91,22 @@ source .venv/bin/activate  # bash
 
 ### Available Scripts
 
-The project defines several convenient scripts in `pyproject.toml`:
+The project defines several convenient validation commands:
 
 - `uv run pytest` - Run pytest
-- `uv format --check` - Check code formatting with Ruff (built-in)
-- `uv run pyright src tests` - Run pyright type checking  
-- `uv format` - Format code with Ruff (built-in)
+- `uv run ruff check src tests` - Lint code with Ruff
+- `uv run ruff format src tests` - Format code with Ruff
+- `uv run ruff format --check src tests` - Check code formatting
+- `uv run pyright src tests` - Run pyright type checking
 
 ### Running Individual Commands
 
 ```bash
 # Run any Python command in the environment
-uv run python -m src.dbt_core_mcp
+uv run python -m dbt_core_mcp
 
 # Run the server directly for testing
-uv run python -m src.dbt_core_mcp --help
+uv run python -m dbt_core_mcp --help
 
 # Enter a shell in the development environment
 source .venv/bin/activate  # or use uv run for commands
@@ -122,8 +126,9 @@ uv creates and manages a virtual environment (`.venv`) in your project directory
 | Command | Description |
 |---------|-------------|
 | `uv run pytest` | Run all tests with pytest |
-| `uv format --check` | Check code formatting (Ruff) |
-| `uv format` | Auto-format code with Ruff |
+| `uv run ruff check src tests` | Lint code with Ruff |
+| `uv run ruff format src tests` | Auto-format code with Ruff |
+| `uv run ruff format --check src tests` | Check code formatting |
 | `uv run pyright src tests` | Run pyright type checking |
 | `uv build` | Build wheel and source distribution |
 | `uv run` | Run commands in the project environment |
@@ -161,10 +166,59 @@ uv creates and manages a virtual environment (`.venv`) in your project directory
 ## Areas for Contribution
 
 - **Bug fixes** - Check the issue tracker
-- **Documentation** - Improve existing docs or add new guides
-- **Features** - New DBT integration features
-- **DBT tools** - Add more DBT command wrappers
+- **Documentation** -dbt integration features
 - **Testing** - Improve test coverage
+- **Performance** - Optimize dbt operations
+
+## Release Process
+
+This project uses [bump-my-version](https://github.com/callowayproject/bump-my-version) for version management and automated PyPI releases.
+ and inclusive. We want this to be a welcoming community for everyone.
+
+## Questions?
+
+Feel free to open an issue for questions, suggestions, or bug reports.
+   git status  # should be clean
+   git push
+   ```
+
+2. **Bump the version:**
+   ```bash
+   # For bug fixes (0.2.5 → 0.2.6)
+   uv run bump-my-version bump patch
+   
+   # For new features (0.2.5 → 0.3.0)
+   uv run bump-my-version bump minor
+   
+   # For breaking changes (0.2.5 → 1.0.0)
+   uv run bump-my-version bump major
+   
+   # Or set a specific version
+   uv run bump-my-version bump --new-version 1.0.0
+   ```
+
+3. **Push the version bump and tag:**
+   ```bash
+   git push --follow-tags
+   ```
+
+4. **GitHub Actions will automatically:**
+   - Run quality checks (format, typecheck, tests)
+   - Build the package
+   - Publish to PyPI
+
+### Version Scheme
+
+We follow [Semantic Versioning](https://semver.org/):
+- **MAJOR** - Breaking changes
+- **MINOR** - New features (backward compatible)
+- **PATCH** - Bug fixes
+
+### What Not to Do
+
+- ❌ Don't manually edit version in `pyproject.toml`
+- ❌ Don't create tags manually
+- ❌ Don't trigger the release workflow manually (it runs automatically on tag push)
 - **Performance** - Optimize DBT operations
 
 ## Code of Conduct

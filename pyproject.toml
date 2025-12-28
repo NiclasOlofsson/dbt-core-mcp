@@ -59,6 +59,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pyright>=1.1.0",
     "ruff>=0.1.0",
+    "bump-my-version>=0.11.0",
 ]
 
 
@@ -108,3 +109,17 @@ python_functions = ["test_*"]
 write = true
 style = "pep257"
 strip-whitespaces = true
+
+[tool.bumpversion]
+current_version = "0.2.5"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+commit = true
+tag = true
+tag_name = "v{new_version}"
+message = "chore: bump version to {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = "version = \"{current_version}\""
+replace = "version = \"{new_version}\""
