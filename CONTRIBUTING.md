@@ -197,19 +197,13 @@ Feel free to open an issue for questions, suggestions, or bug reports.
    uv run bump-my-version bump --new-version 1.0.0
    ```
 
-3. **Push the version bump (commit only):**
+3. **Push the version bump and tag:**
    ```bash
-   git push
+   git push --follow-tags
    ```
 
-4. **Wait for CI to pass** - Check the [Actions tab](https://github.com/NiclasOlofsson/dbt-core-mcp/actions) to verify all quality checks pass
-
-5. **Push the tag to trigger release:**
-   ```bash
-   git push --tags
-   ```
-
-6. **GitHub Actions will automatically:**
+4. **GitHub Actions will automatically:**
+   - Run quality checks (format, typecheck, tests)
    - Build the package
    - Publish to PyPI
 
@@ -224,7 +218,7 @@ We follow [Semantic Versioning](https://semver.org/):
 
 - ❌ Don't manually edit version in `pyproject.toml`
 - ❌ Don't create tags manually
-- ❌ Don't use `git push --follow-tags` (pushes commit and tag simultaneously, causing CI and Release to run in parallel)
+- ❌ Don't trigger the release workflow manually (it runs automatically on tag push)
 - **Performance** - Optimize DBT operations
 
 ## Code of Conduct
