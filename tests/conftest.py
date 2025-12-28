@@ -5,6 +5,7 @@ Pytest configuration and fixtures for dbt Core MCP tests.
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 
 @pytest.fixture
@@ -64,7 +65,7 @@ test_profile:
     return str(profiles_dir)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def jaffle_shop_server():
     """Create a server instance with the jaffle_shop example project."""
     from pathlib import Path
