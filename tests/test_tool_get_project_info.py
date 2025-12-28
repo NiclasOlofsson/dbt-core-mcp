@@ -5,6 +5,7 @@ Tests for get_project_info tool.
 from typing import TYPE_CHECKING
 
 import pytest
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 

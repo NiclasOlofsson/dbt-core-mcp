@@ -5,6 +5,7 @@ Tests for query_database tool.
 from typing import TYPE_CHECKING
 
 import pytest
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
