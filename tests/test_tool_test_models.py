@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running all tests."""
-    result = await jaffle_shop_server.toolImpl_test_models()
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -28,7 +28,7 @@ async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
 
 async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running tests for a specific model."""
-    result = await jaffle_shop_server.toolImpl_test_models(select="customers")
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers")
 
     assert result["status"] == "success"
     assert "results" in result
@@ -42,7 +42,7 @@ async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
 async def test_test_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining modified_only and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
-        await jaffle_shop_server.toolImpl_test_models(select="customers", modified_only=True)
+        await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers", modified_only=True)
 
 
 async def test_test_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
@@ -55,7 +55,7 @@ async def test_test_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcp
 
         shutil.rmtree(state_dir)
 
-    result = await jaffle_shop_server.toolImpl_test_models(modified_only=True)
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, modified_only=True)
 
     assert result["status"] == "error"
     assert "No previous run state found" in result["message"]
@@ -73,7 +73,7 @@ async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
     assert state_dir.exists()
 
     # Now modified_only should work (even if nothing modified, should succeed)
-    result = await jaffle_shop_server.toolImpl_test_models(modified_only=True)
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, modified_only=True)
 
     # Should succeed even with no modified models
     assert result["status"] == "success"
@@ -82,7 +82,7 @@ async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
 
 async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test fail_fast flag is passed to dbt."""
-    result = await jaffle_shop_server.toolImpl_test_models(fail_fast=True)
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, fail_fast=True)
 
     assert result["status"] == "success"
     assert "--fail-fast" in result["command"]
@@ -90,7 +90,7 @@ async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
 
 async def test_test_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific tests."""
-    result = await jaffle_shop_server.toolImpl_test_models(exclude="not_null*")
+    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, exclude="not_null*")
 
     assert result["status"] == "success"
     assert "--exclude not_null*" in result["command"]

@@ -860,8 +860,11 @@ Do you want to proceed?"""
             args.append("--fail-fast")
 
         # Capture pre-run table columns for schema change detection
+        # Also get expected count of models for progress reporting
         pre_run_columns: dict[str, list[str]] = {}
-        if check_schema_changes:
+        expected_total: int | None = None
+
+        if check_schema_changes or True:  # Always get count for progress
             # Use dbt list to get models that will be run (without actually running them)
             list_args = ["list", "--resource-type", "model", "--output", "name"]
 
@@ -875,10 +878,11 @@ Do you want to proceed?"""
                 list_args.extend(["--exclude", exclude])
 
             # Get list of models
-            logger.info(f"Getting model list for schema change detection: {list_args}")
+            logger.info(f"Getting model list: {list_args}")
             list_result = await self.runner.invoke(list_args)  # type: ignore
 
             if list_result.success and list_result.stdout:
+                model_count = 0
                 # Parse model names from output (one per line with --output name)
                 for line in list_result.stdout.strip().split("\n"):
                     line = line.strip()
@@ -891,20 +895,34 @@ Do you want to proceed?"""
                         or "Registered adapter:" in line
                     ):
                         continue
-                    # With --output name, each line is just the model name
-                    model_name = line
-                    # Query pre-run columns
-                    logger.info(f"Querying pre-run columns for {model_name}")
-                    cols = await self._get_table_columns_from_db(model_name)
-                    if cols:
-                        pre_run_columns[model_name] = cols
-                    else:
-                        # Table doesn't exist yet - mark as new
-                        pre_run_columns[model_name] = []
+                    model_count += 1
 
-        # Execute
+                    # For schema change detection, query pre-run columns
+                    if check_schema_changes:
+                        model_name = line
+                        logger.info(f"Querying pre-run columns for {model_name}")
+                        cols = await self._get_table_columns_from_db(model_name)
+                        if cols:
+                            pre_run_columns[model_name] = cols
+                        else:
+                            # Table doesn't exist yet - mark as new
+                            pre_run_columns[model_name] = []
+
+                # Set expected total from model count
+                if model_count > 0:
+                    expected_total = model_count
+                    logger.info(f"Expected total models to run: {expected_total}")
+
+        # Execute with progress reporting
         logger.info(f"Running dbt models with args: {args}")
-        result = await self.runner.invoke(args)  # type: ignore
+        logger.info(f"Expected total for progress: {expected_total}")
+
+        # Define progress callback if context available
+        async def progress_callback(current: int, total: int, message: str) -> None:
+            if ctx:
+                await ctx.report_progress(progress=current, total=total, message=message)
+
+        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None, expected_total=expected_total)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Run failed"
@@ -968,6 +986,7 @@ Do you want to proceed?"""
 
     async def toolImpl_test_models(
         self,
+        ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
         modified_only: bool = False,
@@ -1008,9 +1027,15 @@ Do you want to proceed?"""
         if fail_fast:
             args.append("--fail-fast")
 
-        # Execute
+        # Execute with progress reporting
         logger.info(f"Running dbt tests with args: {args}")
-        result = await self.runner.invoke(args)  # type: ignore
+
+        # Define progress callback if context available
+        async def progress_callback(current: int, total: int, message: str) -> None:
+            if ctx:
+                await ctx.report_progress(progress=current, total=total, message=message)
+
+        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Tests failed"
@@ -1114,9 +1139,15 @@ Do you want to proceed?"""
         if fail_fast:
             args.append("--fail-fast")
 
-        # Execute
+        # Execute with progress reporting
         logger.info(f"Running DBT build with args: {args}")
-        result = await self.runner.invoke(args)  # type: ignore
+
+        # Define progress callback if context available
+        async def progress_callback(current: int, total: int, message: str) -> None:
+            if ctx:
+                await ctx.report_progress(progress=current, total=total, message=message)
+
+        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Build failed"
@@ -1150,6 +1181,7 @@ Do you want to proceed?"""
 
     async def toolImpl_seed_data(
         self,
+        ctx: Context | None = None,
         select: str | None = None,
         exclude: str | None = None,
         modified_only: bool = False,
@@ -1192,9 +1224,15 @@ Do you want to proceed?"""
         if show:
             args.append("--show")
 
-        # Execute
+        # Execute with progress reporting
         logger.info(f"Running DBT seed with args: {args}")
-        result = await self.runner.invoke(args)  # type: ignore
+
+        # Define progress callback if context available
+        async def progress_callback(current: int, total: int, message: str) -> None:
+            if ctx:
+                await ctx.report_progress(progress=current, total=total, message=message)
+
+        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Seed failed"
@@ -1639,7 +1677,7 @@ Do you want to proceed?"""
                 Test results with status and failures
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_test_models(select, exclude, modified_only, modified_downstream, fail_fast)
+            return await self.toolImpl_test_models(ctx, select, exclude, modified_only, modified_downstream, fail_fast)
 
         @self.app.tool()
         async def build_models(
@@ -1721,7 +1759,7 @@ Do you want to proceed?"""
                 seed_data(select="raw_customers")  # Load specific seed
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_seed_data(select, exclude, modified_only, modified_downstream, full_refresh, show)
+            return await self.toolImpl_seed_data(ctx, select, exclude, modified_only, modified_downstream, full_refresh, show)
 
         @self.app.tool()
         async def snapshot_models(
@@ -1784,8 +1822,6 @@ Do you want to proceed?"""
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_install_deps()
-
-        logger.info("Registered dbt tools")
 
     def run(self) -> None:
         """Run the MCP server."""
