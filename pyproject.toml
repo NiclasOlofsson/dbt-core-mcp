@@ -55,8 +55,6 @@ packages = ["src/dbt_core_mcp"]
 
 [dependency-groups]
 dev = [
-    "dbt-core>=1.7.0",
-    "dbt-duckdb>=1.7.0",
     "pytest>=7.0.0",
     "pytest-asyncio==1.2.0",
     "pyright>=1.1.0",
