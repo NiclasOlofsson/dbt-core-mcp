@@ -205,8 +205,10 @@ This project uses [bump-my-version](https://github.com/callowayproject/bump-my-v
 4. **GitHub Actions will automatically:**
    - Run quality checks (format, typecheck, tests)
    - Build the package
-   - Create a GitHub Release with auto-generated notes
+   - Create a GitHub Release with auto-generated release notes
    - Publish to PyPI
+
+> **Note:** The entire release process is automated via GitHub Actions. Once you push the tag, the CI pipeline handles building, testing, creating the GitHub release with auto-generated notes from commit history, and publishing to PyPI. You don't need to manually create releases or write release notes.
 
 ### Version Scheme
 
