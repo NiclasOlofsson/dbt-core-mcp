@@ -173,11 +173,11 @@ uv creates and manages a virtual environment (`.venv`) in your project directory
 ## Release Process
 
 This project uses [bump-my-version](https://github.com/callowayproject/bump-my-version) for version management and automated PyPI releases.
- and inclusive. We want this to be a welcoming community for everyone.
 
-## Questions?
+### Creating a Release
 
-Feel free to open an issue for questions, suggestions, or bug reports.
+1. **Ensure all changes are committed and pushed:**
+   ```bash
    git status  # should be clean
    git push
    ```
@@ -205,6 +205,7 @@ Feel free to open an issue for questions, suggestions, or bug reports.
 4. **GitHub Actions will automatically:**
    - Run quality checks (format, typecheck, tests)
    - Build the package
+   - Create a GitHub Release with auto-generated notes
    - Publish to PyPI
 
 ### Version Scheme
@@ -219,7 +220,6 @@ We follow [Semantic Versioning](https://semver.org/):
 - ❌ Don't manually edit version in `pyproject.toml`
 - ❌ Don't create tags manually
 - ❌ Don't trigger the release workflow manually (it runs automatically on tag push)
-- **Performance** - Optimize DBT operations
 
 ## Code of Conduct
 
