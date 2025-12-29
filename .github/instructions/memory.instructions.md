@@ -1,11 +1,11 @@
 ---
 applyTo: '**'
 description: Workspace-specific AI memory for this project
-lastOptimized: '2025-12-28T14:30:19.529094+00:00'
-entryCount: 0
-optimizationVersion: 6
+lastOptimized: '2025-12-29T12:18:24.604279+00:00'
+entryCount: 1
+optimizationVersion: 8
 autoOptimize: true
-lastOptimizedTokenCount: 620
+lastOptimizedTokenCount: 710
 tokenGrowthThreshold: 1.2
 ---
 # Workspace AI Memory
@@ -38,7 +38,10 @@ This file contains workspace-specific information for AI conversations.
    - NO EXCEPTIONS
 
 3. **MCP Server Restart Protocol**:
-   - STEP 1: Update `.vscode/mcp.json` file by incrementing `_RESTART` counter (any change triggers restart)
+   - CONFIGURATION: Use `_RESTART` counter in `.vscode/mcp.json` env section to force server restarts
+     - Increment the value (e.g., `"_RESTART": "71"` → `"72"`) to trigger VS Code to restart the MCP server
+     - Essential for testing MCP server code changes without manually restarting VS Code
+   - STEP 1: Update `.vscode/mcp.json` file by incrementing `_RESTART` counter
    - STEP 2: **CRITICAL** - Do NOT invoke MCP tools in the same tool call batch as the mcp.json edit
    - STEP 3: Wait for next user interaction or separate tool invocation
    - STEP 4: Then invoke MCP tools for testing
@@ -46,6 +49,17 @@ This file contains workspace-specific information for AI conversations.
    - Server restarts asynchronously in background - do NOT use sleep commands
    - Framework handles restart timing automatically
    - APPLIES TO: dbt-core-mcp project MCP server management
+   - NO EXCEPTIONS
+
+4. **Git Commit Amendment Protocol**:
+   - When fixing issues in the MOST RECENT commit (before anyone else pulls):
+     - Use `git commit --amend --no-edit` to fix without creating new commit
+     - Use `git push --force` to rewrite remote history
+     - Keeps git history clean for release notes
+   - ONLY amend if commit hasn't been pulled by others
+   - Examples: formatting fixes, typos, forgot to add files after initial commit
+   - DO NOT create second commits for fixes to recent work (clutters release notes)
+   - APPLIES TO: All git operations in dbt-core-mcp workspace
    - NO EXCEPTIONS
 
 ## Policies

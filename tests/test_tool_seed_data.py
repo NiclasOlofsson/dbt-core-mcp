@@ -43,14 +43,14 @@ async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
 
 @pytest.mark.asyncio
 async def test_seed_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test that combining modified_only and select raises error."""
-    with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
-        await jaffle_shop_server.toolImpl_seed_data(select="raw_customers", modified_only=True)
+    """Test that combining select_state_modified and select raises error."""
+    with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
+        await jaffle_shop_server.toolImpl_seed_data(select="raw_customers", select_state_modified=True)
 
 
 @pytest.mark.asyncio
 async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test that modified_only requires previous state."""
+    """Test that select_state_modified without state returns success (cannot determine modifications)."""
     # Remove state if it exists
     assert jaffle_shop_server.project_dir is not None
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
@@ -59,10 +59,11 @@ async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcp
 
         shutil.rmtree(state_dir)
 
-    result = await jaffle_shop_server.toolImpl_seed_data(modified_only=True)
+    result = await jaffle_shop_server.toolImpl_seed_data(select_state_modified=True)
 
-    assert result["status"] == "error"
-    assert "No previous seed state found" in result["message"]
+    assert result["status"] == "success"
+    assert "No previous state" in result["message"]
+    assert result["results"] == []
 
 
 @pytest.mark.asyncio

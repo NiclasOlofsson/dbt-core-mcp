@@ -44,14 +44,14 @@ async def test_run_models_select_specific(seeded_jaffle_shop_server: "DbtCoreMcp
 
 @pytest.mark.asyncio
 async def test_run_models_invalid_selection_combination(jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test that using both modified_only and select raises error."""
-    with pytest.raises(ValueError, match="Cannot use both modified_\\* flags and select parameter"):
-        await jaffle_shop_server.toolImpl_run_models(ctx=None, select="customers", modified_only=True)
+    """Test that using both select_state_modified and select raises error."""
+    with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
+        await jaffle_shop_server.toolImpl_run_models(ctx=None, select="customers", select_state_modified=True)
 
 
 @pytest.mark.asyncio
-async def test_run_models_modified_only_no_state(jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test modified_only without previous state returns appropriate error."""
+async def test_run_models_modified_only_no_state_runs_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+    """Test select_state_modified without state returns success (cannot determine modifications)."""
     # Clean any existing state
     assert jaffle_shop_server.project_dir is not None
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
@@ -60,10 +60,12 @@ async def test_run_models_modified_only_no_state(jaffle_shop_server: "DbtCoreMcp
 
         shutil.rmtree(state_dir)
 
-    result = await jaffle_shop_server.toolImpl_run_models(ctx=None, modified_only=True)
+    # With no state, select_state_modified should return success with message (not run anything)
+    result = await jaffle_shop_server.toolImpl_run_models(ctx=None, select_state_modified=True)
 
-    assert result["status"] == "error"
-    assert "No previous run state found" in result["message"]
+    assert result["status"] == "success"
+    assert "No previous state" in result["message"]
+    assert result["results"] == []
 
 
 @pytest.mark.asyncio

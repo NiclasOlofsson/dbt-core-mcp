@@ -418,11 +418,11 @@ Execute SQL queries against your database using dbt's ref() and source() functio
 ### Execution Tools
 
 #### `run_models`
-Run dbt models with smart selection for fast development.
+Run dbt models with state-based selection for fast development. Requires previous state (from a prior run) to detect modifications.
 
 >&nbsp;  
 >You: *"Run only the models I changed"*  
->Copilot: *Detects modified models and executes dbt run with selection*
+>Copilot: *Uses state comparison to detect and run only modified models*
 >
 >You: *"Run my changes and everything downstream"*  
 >Copilot: *Runs modified models plus all downstream dependencies*
@@ -437,9 +437,15 @@ Run dbt models with smart selection for fast development.
 >Copilot: *Runs models and detects added/removed columns*  
 >&nbsp;
 
-**Smart selection modes:**
-- `modified_only`: Run only models that changed
-- `modified_downstream`: Run changed models + everything downstream
+**State-based selection modes:**
+- `select_state_modified`: Run only models that changed (requires previous state)
+- `select_state_modified_plus_downstream`: Run changed models + everything downstream
+
+**How state works:**
+- First run establishes baseline state automatically
+- Subsequent runs compare against this state to detect changes
+- If no previous state exists, returns success (cannot determine modifications)
+- State is saved automatically after each successful run
 
 **Other parameters:**
 - `select`: Model selector (e.g., "customers", "tag:mart")
@@ -452,11 +458,11 @@ Run dbt models with smart selection for fast development.
 When enabled, detects added or removed columns and recommends running downstream models to propagate changes.
 
 #### `test_models`
-Run dbt tests with smart selection.
+Run dbt tests with state-based selection. Requires previous state to detect modifications.
 
 >&nbsp;  
 >You: *"Test only the models I changed"*  
->Copilot: *Runs tests for modified models only*
+>Copilot: *Uses state comparison to test only modified models*
 >
 >You: *"Run tests for my changes and downstream models"*  
 >Copilot: *Tests modified models and everything affected downstream*
@@ -468,19 +474,22 @@ Run dbt tests with smart selection.
 >Copilot: *Runs dbt test --select staging.*  
 >&nbsp;
 
-**Parameters:**
-- `modified_only`: Test only changed models
-- `modified_downstream`: Test changed models + downstream
+**State-based selection modes:**
+- `select_state_modified`: Test only changed models (requires previous state)
+- `select_state_modified_plus_downstream`: Test changed models + downstream
+- If no previous state exists, returns success (cannot determine modifications)
+
+**Other parameters:**
 - `select`: Test selector (e.g., "customers", "tag:mart")
 - `exclude`: Exclude tests
 - `fail_fast`: Stop on first failure
 
 #### `build_models`
-Run models and tests together in dependency order (most efficient approach).
+Run models and tests together in dependency order (most efficient approach). Supports state-based selection.
 
 >&nbsp;  
 >You: *"Build my changes and everything downstream"*  
->Copilot: *Runs dbt build with modified models and dependencies*
+>Copilot: *Uses state comparison to build modified models and dependencies*
 >
 >You: *"Run and test only what I modified"*  
 >Copilot: *Executes dbt build on changed models only*
@@ -488,6 +497,11 @@ Run models and tests together in dependency order (most efficient approach).
 >You: *"Build the entire mart layer with tests"*  
 >Copilot: *Runs dbt build --select marts.* with all tests*  
 >&nbsp;
+
+**State-based selection modes:**
+- `select_state_modified`: Build only changed models (requires previous state)
+- `select_state_modified_plus_downstream`: Build changed models + downstream
+- If no previous state exists, returns success (cannot determine modifications)
 
 #### `seed_data`
 Load seed data (CSV files) from `seeds/` directory into database tables.
@@ -508,9 +522,10 @@ Load seed data (CSV files) from `seeds/` directory into database tables.
 
 Seeds are typically used for reference data like country codes, product categories, etc.
 
-**Smart selection modes:**
-- `modified_only`: Load only seeds that changed
-- `modified_downstream`: Load changed seeds + downstream dependencies
+**State-based selection modes:**
+- `select_state_modified`: Load only seeds that changed (requires previous state)
+- `select_state_modified_plus_downstream`: Load changed seeds + downstream dependencies
+- If no previous state exists, returns success (cannot determine modifications)
 
 **Other parameters:**
 - `select`: Seed selector (e.g., "raw_customers", "tag:lookup")

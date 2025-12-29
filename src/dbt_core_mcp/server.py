@@ -476,45 +476,47 @@ class DbtCoreMcpServer:
         logger.info(f"Extracted {len(columns)} columns for {model_name}: {columns}")
         return sorted(columns)
 
-    async def _detect_modified_models(self, selector: str, state_path: str = "target/state_last_run") -> list[str]:
-        """Detect which models would be selected by dbt without running them.
-
-        Uses `dbt list` command to perform a dry-run.
+    async def _prepare_state_based_selection(
+        self,
+        select_state_modified: bool,
+        select_state_modified_plus_downstream: bool,
+        select: str | None,
+    ) -> str | None:
+        """Validate and prepare state-based selection.
 
         Args:
-            selector: DBT selector (e.g., "state:modified", "state:modified+")
-            state_path: Path to state directory
+            select_state_modified: Use state:modified selector
+            select_state_modified_plus_downstream: Extend to state:modified+
+            select: Manual selector (conflicts with state-based)
 
         Returns:
-            List of model names that would be selected
+            The dbt selector string to use ("state:modified" or "state:modified+"), or None if:
+            - Not using state-based selection
+            - No previous state exists (cannot determine modifications)
+
+        Raises:
+            ValueError: If validation fails
         """
-        args = ["list", "--select", selector, "--state", state_path, "--output", "name"]
-        result = await self.runner.invoke(args)  # type: ignore
+        # Validate: hierarchical requirement
+        if select_state_modified_plus_downstream and not select_state_modified:
+            raise ValueError("select_state_modified_plus_downstream requires select_state_modified=True")
 
-        if not result.success:
-            raise ValueError(f"Failed to detect modified models: {result.exception}")
+        # Validate: can't use both state-based and manual selection
+        if select_state_modified and select:
+            raise ValueError("Cannot use both select_state_modified* flags and select parameter")
 
-        # Parse output to get model names
-        models = []
-        logger.info(f"dbt list output: {result.stdout[:500]}")
+        # If not using state-based selection, return None
+        if not select_state_modified:
+            return None
 
-        for line in result.stdout.split("\n"):
-            line = line.strip()
-            # Skip empty lines
-            if not line:
-                continue
-            # Skip log/info lines (start with timestamp, brackets, or contain common log keywords)
-            if line.startswith("[") or line.startswith("{"):
-                continue
-            if ":" in line[:15]:  # Timestamp like "12:34:56"
-                continue
-            if any(skip in line for skip in ["Running with dbt=", "Registered adapter:", "Found", "Concurrency:", "Finished running", "Completed successfully"]):
-                continue
-            # Line should be a model name (e.g., "jaffle_shop.customers" or just "customers")
-            models.append(line)
+        # Check if state exists
+        state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
+        if not state_dir.exists():
+            # No state - cannot determine modifications
+            return None
 
-        logger.info(f"Detected modified models: {models}")
-        return models
+        # Return selector (state exists)
+        return "state:modified+" if select_state_modified_plus_downstream else "state:modified"
 
     async def toolImpl_get_resource_info(
         self,
@@ -786,67 +788,31 @@ class DbtCoreMcpServer:
         ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
-        modified_only: bool = False,
-        modified_downstream: bool = False,
+        select_state_modified: bool = False,
+        select_state_modified_plus_downstream: bool = False,
         full_refresh: bool = False,
         fail_fast: bool = False,
         check_schema_changes: bool = False,
-        confirm_threshold: int = 5,
     ) -> dict[str, Any]:
         """Implementation for run_models tool."""
-        # Validate: can't use both smart and manual selection
-        if (modified_only or modified_downstream) and select:
-            raise ValueError("Cannot use both modified_* flags and select parameter")
+        # Prepare state-based selection (validates and returns selector)
+        selector = await self._prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
+
+        # Early return if state-based requested but no state exists
+        if select_state_modified and not selector:
+            return {
+                "status": "success",
+                "message": "No previous state found - cannot determine modifications",
+                "results": [],
+                "elapsed_time": 0,
+            }
 
         # Build command args
         args = ["run"]
 
-        # Handle smart selection
-        # Use relative path since DBT runs from project_dir
-        state_dir = self.project_dir / "target" / "state_last_run"  # type: ignore
-
-        if modified_only or modified_downstream:
-            if not state_dir.exists():
-                return {
-                    "status": "error",
-                    "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
-                }
-
-            selector = "state:modified+" if modified_downstream else "state:modified"
-
-            # Detect which models will be run
-            try:
-                models_to_run = await self._detect_modified_models(selector)
-            except Exception as e:
-                return {"status": "error", "message": f"Failed to detect modified models: {str(e)}"}
-
-            # Ask for user confirmation
-            if not models_to_run:
-                if ctx:
-                    await ctx.info("No modified models detected")
-                return {"status": "success", "message": "No modified models to run", "results": [], "elapsed_time": 0}
-
-            # Ask for user confirmation only if above threshold
-            if len(models_to_run) >= confirm_threshold and ctx:
-                model_list = "\n".join(f"- {m}" for m in models_to_run)
-                message = f"""The following {len(models_to_run)} model(s) have changes and will be run:
-
-{model_list}
-
-Do you want to proceed?"""
-
-                result = await ctx.elicit(message=message, response_type=None)
-
-                if result.action != "accept":
-                    raise ValueError("User declined to run models")
-
-            if ctx:
-                await ctx.info(f"Running {len(models_to_run)} modified model(s)...")
-
-            # Use relative path for --state since cwd=project_dir
+        # Add selector if we have one (state-based or manual)
+        if selector:
             args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-        # Manual selection
         elif select:
             args.extend(["-s", select])
 
@@ -868,8 +834,8 @@ Do you want to proceed?"""
             # Use dbt list to get models that will be run (without actually running them)
             list_args = ["list", "--resource-type", "model", "--output", "name"]
 
-            if modified_only or modified_downstream:
-                selector = "state:modified+" if modified_downstream else "state:modified"
+            if select_state_modified:
+                selector = "state:modified+" if select_state_modified_plus_downstream else "state:modified"
                 list_args.extend(["-s", selector, "--state", "target/state_last_run"])
             elif select:
                 list_args.extend(["-s", select])
@@ -967,6 +933,7 @@ Do you want to proceed?"""
 
         # Save state on success for next modified run
         if result.success and self.project_dir:
+            state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = self.runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
@@ -989,35 +956,29 @@ Do you want to proceed?"""
         ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
-        modified_only: bool = False,
-        modified_downstream: bool = False,
+        select_state_modified: bool = False,
+        select_state_modified_plus_downstream: bool = False,
         fail_fast: bool = False,
     ) -> dict[str, Any]:
         """Implementation of test_models tool."""
-        # Validate: can't use both smart and manual selection
-        if (modified_only or modified_downstream) and select:
-            raise ValueError("Cannot use both modified_* flags and select parameter")
+        # Prepare state-based selection (validates and returns selector)
+        selector = await self._prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
+
+        # Early return if state-based requested but no state exists
+        if select_state_modified and not selector:
+            return {
+                "status": "success",
+                "message": "No previous state found - cannot determine modifications",
+                "results": [],
+                "elapsed_time": 0,
+            }
 
         # Build command args
         args = ["test"]
 
-        # Handle smart selection
-        # Use relative path since DBT runs from project_dir
-        assert self.project_dir is not None
-        state_dir = self.project_dir / "target" / "state_last_run"
-
-        if modified_only or modified_downstream:
-            if not state_dir.exists():
-                return {
-                    "status": "error",
-                    "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
-                }
-
-            selector = "state:modified+" if modified_downstream else "state:modified"
-            # Use relative path for --state since cwd=project_dir
+        # Add selector if we have one (state-based or manual)
+        if selector:
             args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-        # Manual selection
         elif select:
             args.extend(["-s", select])
 
@@ -1066,67 +1027,30 @@ Do you want to proceed?"""
         ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
-        modified_only: bool = False,
-        modified_downstream: bool = False,
+        select_state_modified: bool = False,
+        select_state_modified_plus_downstream: bool = False,
         full_refresh: bool = False,
         fail_fast: bool = False,
-        confirm_threshold: int = 5,
     ) -> dict[str, Any]:
         """Implementation of build_models tool."""
-        # Validate: can't use both smart and manual selection
-        if (modified_only or modified_downstream) and select:
-            raise ValueError("Cannot use both modified_* flags and select parameter")
+        # Prepare state-based selection (validates and returns selector)
+        selector = await self._prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
+
+        # Early return if state-based requested but no state exists
+        if select_state_modified and not selector:
+            return {
+                "status": "success",
+                "message": "No previous state found - cannot determine modifications",
+                "results": [],
+                "elapsed_time": 0,
+            }
 
         # Build command args
         args = ["build"]
 
-        # Handle smart selection
-        # Use relative path since DBT runs from project_dir
-        assert self.project_dir is not None
-        state_dir = self.project_dir / "target" / "state_last_run"
-
-        if modified_only or modified_downstream:
-            if not state_dir.exists():
-                return {
-                    "status": "error",
-                    "message": "No previous run state found. Run without modified_* flags first to establish baseline.",
-                }
-
-            selector = "state:modified+" if modified_downstream else "state:modified"
-
-            # Detect which models will be built
-            try:
-                models_to_build = await self._detect_modified_models(selector)
-            except Exception as e:
-                return {"status": "error", "message": f"Failed to detect modified models: {str(e)}"}
-
-            # Ask for user confirmation
-            if not models_to_build:
-                if ctx:
-                    await ctx.info("No modified models detected")
-                return {"status": "success", "message": "No modified models to build", "results": [], "elapsed_time": 0}
-
-            # Ask for user confirmation only if above threshold
-            if len(models_to_build) >= confirm_threshold and ctx:
-                model_list = "\n".join(f"- {m}" for m in models_to_build)
-                message = f"""The following {len(models_to_build)} model(s) have changes and will be built:
-
-{model_list}
-
-Do you want to proceed?"""
-
-                result = await ctx.elicit(message=message, response_type=None)
-
-                if result.action != "accept":
-                    raise ValueError("User declined to build models")
-
-            if ctx:
-                await ctx.info(f"Building {len(models_to_build)} modified model(s)...")
-
-            # Use relative path for --state since cwd=project_dir
+        # Add selector if we have one (state-based or manual)
+        if selector:
             args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-        # Manual selection
         elif select:
             args.extend(["-s", select])
 
@@ -1165,6 +1089,7 @@ Do you want to proceed?"""
 
         # Save state on success for next modified run
         if result.success and self.project_dir:
+            state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = self.runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
@@ -1184,34 +1109,30 @@ Do you want to proceed?"""
         ctx: Context | None = None,
         select: str | None = None,
         exclude: str | None = None,
-        modified_only: bool = False,
-        modified_downstream: bool = False,
+        select_state_modified: bool = False,
+        select_state_modified_plus_downstream: bool = False,
         full_refresh: bool = False,
         show: bool = False,
     ) -> dict[str, Any]:
         """Implementation of seed_data tool."""
-        # Validate: can't use both smart and manual selection
-        if (modified_only or modified_downstream) and select:
-            raise ValueError("Cannot use both modified_* flags and select parameter")
+        # Prepare state-based selection (validates and returns selector)
+        selector = await self._prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
+
+        # Early return if state-based requested but no state exists
+        if select_state_modified and not selector:
+            return {
+                "status": "success",
+                "message": "No previous state found - cannot determine modifications",
+                "results": [],
+                "elapsed_time": 0,
+            }
 
         # Build command args
         args = ["seed"]
 
-        # Handle smart selection
-        assert self.project_dir is not None
-        state_dir = self.project_dir / "target" / "state_last_run"
-
-        if modified_only or modified_downstream:
-            if not state_dir.exists():
-                return {
-                    "status": "error",
-                    "message": "No previous seed state found. Run without modified_* flags first to establish baseline.",
-                }
-
-            selector = "state:modified+" if modified_downstream else "state:modified"
+        # Add selector if we have one (state-based or manual)
+        if selector:
             args.extend(["-s", selector, "--state", "target/state_last_run"])
-
-        # Manual selection
         elif select:
             args.extend(["-s", select])
 
@@ -1250,6 +1171,7 @@ Do you want to proceed?"""
 
         # Save state on success for next modified run
         if result.success and self.project_dir:
+            state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = self.runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
@@ -1606,122 +1528,120 @@ Do you want to proceed?"""
             ctx: Context,
             select: str | None = None,
             exclude: str | None = None,
-            modified_only: bool = False,
-            modified_downstream: bool = False,
+            select_state_modified: bool = False,
+            select_state_modified_plus_downstream: bool = False,
             full_refresh: bool = False,
             fail_fast: bool = False,
             check_schema_changes: bool = False,
-            confirm_threshold: int = 5,
         ) -> dict[str, Any]:
             """Run dbt models (compile SQL and execute against database).
 
-            Smart selection modes for developers:
-            - modified_only: Run only models that changed since last successful run
-            - modified_downstream: Run changed models + all downstream dependencies
+            State-based selection modes (uses dbt state:modified selector):
+            - select_state_modified: Run only models modified since last successful run (state:modified)
+            - select_state_modified_plus_downstream: Run modified + downstream dependencies (state:modified+)
+              Note: Requires select_state_modified=True
 
-            Manual selection (if not using smart modes):
+            Manual selection (alternative to state-based):
             - select: dbt selector syntax (e.g., "customers", "tag:mart", "stg_*")
             - exclude: Exclude specific models
 
             Args:
                 select: Manual selector (e.g., "customers", "tag:mart", "path:marts/*")
                 exclude: Exclude selector (e.g., "tag:deprecated")
-                modified_only: Only run models modified since last successful run
-                modified_downstream: Run modified models + downstream dependencies
+                select_state_modified: Use state:modified selector (changed models only)
+                select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 full_refresh: Force full refresh of incremental models
                 fail_fast: Stop execution on first failure
                 check_schema_changes: Detect schema changes and recommend downstream runs
-                confirm_threshold: Minimum number of models to trigger confirmation (default: 5)
 
             Returns:
                 Execution results with status, models run, timing info, and optional schema_changes
 
             Examples:
                 - run_models(select="customers") - Run specific model
-                - run_models(modified_only=True) - Run only what changed
-                - run_models(modified_downstream=True) - Run changed + downstream
+                - run_models(select_state_modified=True) - Run only what changed
+                - run_models(select_state_modified=True, select_state_modified_plus_downstream=True) - Run changed + downstream
                 - run_models(select="tag:mart", full_refresh=True) - Full refresh marts
-                - run_models(modified_only=True, check_schema_changes=True) - Detect schema changes
-                - run_models(modified_only=True, confirm_threshold=10) - Confirm only if 10+ models
+                - run_models(select_state_modified=True, check_schema_changes=True) - Detect schema changes
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_run_models(ctx, select, exclude, modified_only, modified_downstream, full_refresh, fail_fast, check_schema_changes, confirm_threshold)
+            return await self.toolImpl_run_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast, check_schema_changes)
 
         @self.app.tool()
         async def test_models(
             ctx: Context,
             select: str | None = None,
             exclude: str | None = None,
-            modified_only: bool = False,
-            modified_downstream: bool = False,
+            select_state_modified: bool = False,
+            select_state_modified_plus_downstream: bool = False,
             fail_fast: bool = False,
         ) -> dict[str, Any]:
             """Run dbt tests on models and sources.
 
-            Smart selection modes for developers:
-            - modified_only: Test only models that changed since last successful run
-            - modified_downstream: Test changed models + all downstream dependencies
+            State-based selection modes (uses dbt state:modified selector):
+            - select_state_modified: Test only models modified since last successful run (state:modified)
+            - select_state_modified_plus_downstream: Test modified + downstream dependencies (state:modified+)
+              Note: Requires select_state_modified=True
 
-            Manual selection (if not using smart modes):
+            Manual selection (alternative to state-based):
             - select: dbt selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
             - exclude: Exclude specific tests
 
             Args:
                 select: Manual selector for tests/models to test
                 exclude: Exclude selector
-                modified_only: Only test models modified since last successful run
-                modified_downstream: Test modified models + downstream dependencies
+                select_state_modified: Use state:modified selector (changed models only)
+                select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 fail_fast: Stop execution on first failure
 
             Returns:
                 Test results with status and failures
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_test_models(ctx, select, exclude, modified_only, modified_downstream, fail_fast)
+            return await self.toolImpl_test_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, fail_fast)
 
         @self.app.tool()
         async def build_models(
             ctx: Context,
             select: str | None = None,
             exclude: str | None = None,
-            modified_only: bool = False,
-            modified_downstream: bool = False,
+            select_state_modified: bool = False,
+            select_state_modified_plus_downstream: bool = False,
             full_refresh: bool = False,
             fail_fast: bool = False,
-            confirm_threshold: int = 5,
         ) -> dict[str, Any]:
             """Run DBT build (run + test in DAG order).
 
-            Smart selection modes for developers:
-            - modified_only: Build only models that changed since last successful run
-            - modified_downstream: Build changed models + all downstream dependencies
+            State-based selection modes (uses dbt state:modified selector):
+            - select_state_modified: Build only models modified since last successful run (state:modified)
+            - select_state_modified_plus_downstream: Build modified + downstream dependencies (state:modified+)
+              Note: Requires select_state_modified=True
 
-            Manual selection (if not using smart modes):
+            Manual selection (alternative to state-based):
             - select: dbt selector syntax (e.g., "customers", "tag:mart", "stg_*")
             - exclude: Exclude specific models
 
             Args:
                 select: Manual selector
                 exclude: Exclude selector
-                modified_only: Only build models modified since last successful run
-                modified_downstream: Build modified models + downstream dependencies
+                select_state_modified: Use state:modified selector (changed models only)
+                select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 full_refresh: Force full refresh of incremental models
                 fail_fast: Stop execution on first failure
-                confirm_threshold: Minimum number of models to trigger confirmation (default: 5)
 
             Returns:
                 Build results with status, models run/tested, and timing info
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_build_models(ctx, select, exclude, modified_only, modified_downstream, full_refresh, fail_fast, confirm_threshold)
+            return await self.toolImpl_build_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast)
 
         @self.app.tool()
         async def seed_data(
             ctx: Context,
             select: str | None = None,
             exclude: str | None = None,
-            modified_only: bool = False,
-            modified_downstream: bool = False,
+            select_state_modified: bool = False,
+            select_state_modified_plus_downstream: bool = False,
             full_refresh: bool = False,
             show: bool = False,
         ) -> dict[str, Any]:
@@ -1729,11 +1649,12 @@ Do you want to proceed?"""
 
             Seeds are typically used for reference data like country codes, product categories, etc.
 
-            Smart selection modes detect changed CSV files:
-            - modified_only: Load only seeds that changed since last successful run
-            - modified_downstream: Load changed seeds + all downstream dependencies
+            State-based selection modes (detects changed CSV files):
+            - select_state_modified: Load only seeds modified since last successful run (state:modified)
+            - select_state_modified_plus_downstream: Load modified + downstream dependencies (state:modified+)
+              Note: Requires select_state_modified=True
 
-            Manual selection (if not using smart modes):
+            Manual selection (alternative to state-based):
             - select: dbt selector syntax (e.g., "raw_customers", "tag:lookup")
             - exclude: Exclude specific seeds
 
@@ -1745,8 +1666,8 @@ Do you want to proceed?"""
             Args:
                 select: Manual selector for seeds
                 exclude: Exclude selector
-                modified_only: Only load seeds modified since last successful run
-                modified_downstream: Load modified seeds + downstream dependencies
+                select_state_modified: Use state:modified selector (changed seeds only)
+                select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 full_refresh: Truncate and reload seed tables (default behavior)
                 show: Show preview of loaded data
 
@@ -1755,11 +1676,11 @@ Do you want to proceed?"""
 
             Examples:
                 seed_data()  # Load all seeds
-                seed_data(modified_only=True)  # Load only changed CSVs
+                seed_data(select_state_modified=True)  # Load only changed CSVs
                 seed_data(select="raw_customers")  # Load specific seed
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_seed_data(ctx, select, exclude, modified_only, modified_downstream, full_refresh, show)
+            return await self.toolImpl_seed_data(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, show)
 
         @self.app.tool()
         async def snapshot_models(
@@ -1789,7 +1710,7 @@ Do you want to proceed?"""
                 snapshot_models(select="customer_history")  # Run specific snapshot
                 snapshot_models(select="tag:hourly")  # Run snapshots tagged 'hourly'
 
-            Note: Snapshots do not support smart selection (modified_only/modified_downstream)
+            Note: Snapshots do not support state-based selection (select_state_modified*)
                 because they are time-dependent, not change-dependent.
             """
             await self._ensure_initialized_with_context(ctx)
