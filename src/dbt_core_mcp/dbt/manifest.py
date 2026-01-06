@@ -286,8 +286,9 @@ class ManifestLoader:
 
         # Handle results based on match count
         if len(matches) == 0:
-            type_hint = f" of type '{resource_type}'" if resource_type else ""
-            raise ValueError(f"Resource '{name}'{type_hint} not found in manifest")
+            type_label = resource_type.title() if resource_type else "Resource"
+            list_hint = f"Use list_resources(type='{resource_type}') to see all available {resource_type}s." if resource_type else "Use list_resources() to see all available resources."
+            raise ValueError(f"{type_label} '{name}' not found.\n{list_hint}")
         elif len(matches) == 1:
             # Single match - return the resource directly
             return matches[0]
