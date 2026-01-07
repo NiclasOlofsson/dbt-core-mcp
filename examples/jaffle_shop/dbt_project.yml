@@ -6,7 +6,7 @@ config-version: 2
 profile: 'jaffle_shop'
 
 # These configurations specify where dbt should look for different types of files.
-model-paths: ["models"]
+model-paths: ["models", "unit_tests"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
 seed-paths: ["seeds"]

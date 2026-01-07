@@ -1,0 +1,56 @@
+version: 2
+
+# Anchor the dict item, not the list
+_base_customers: &customer_input
+  input: ref('stg_customers')
+  rows:
+    - {customer_id: 1, first_name: 'Alice', last_name: 'Smith'}
+    - {customer_id: 2, first_name: 'Bob', last_name: 'Jones'}
+
+unit_tests:
+  - name: test_customer_order_aggregation
+    description: Verify customers with multiple orders are aggregated correctly
+    model: customers
+    given:
+      - *customer_input
+      
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 101, customer_id: 1, order_date: '2024-01-01'}
+          - {order_id: 102, customer_id: 1, order_date: '2024-01-15'}
+          - {order_id: 103, customer_id: 1, order_date: '2024-02-01'}
+    
+    expect:
+      rows:
+        - {customer_id: 1, first_name: 'Alice', last_name: 'Smith', first_order_date: '2024-01-01', most_recent_order_date: '2024-02-01', number_of_orders: 3}
+        - {customer_id: 2, first_name: 'Bob', last_name: 'Jones', first_order_date: null, most_recent_order_date: null, number_of_orders: 0}
+
+  - name: test_customer_with_no_orders
+    description: Verify customer with no orders gets 0 count, not null
+    model: customers
+    given:
+      - input: ref('stg_customers')
+        rows:
+          - {customer_id: 99, first_name: 'New', last_name: 'Customer'}
+      
+      - input: ref('stg_orders')
+        rows: []
+    
+    expect:
+      rows:
+        - {customer_id: 99, first_name: 'New', last_name: 'Customer', number_of_orders: 0}
+  - name: test_customer_with_single_order
+    description: Verify first and most recent order dates match for single order
+    model: customers
+    given:
+      - input: ref('stg_customers')
+        rows:
+          - {customer_id: 50, first_name: 'Emma', last_name: 'Wilson'}
+      
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 100, customer_id: 50, order_date: '2024-01-15', status: 'completed'}
+    
+    expect:
+      rows:
+        - {customer_id: 50, first_name: 'Emma', last_name: 'Wilson', first_order_date: '2024-01-15', most_recent_order_date: '2024-01-15', number_of_orders: 1}

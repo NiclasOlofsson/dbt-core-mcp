@@ -1536,6 +1536,12 @@ class DbtCoreMcpServer:
         ) -> dict[str, Any]:
             """Run dbt models (compile SQL and execute against database).
 
+            **What are models**: SQL files (.sql) containing SELECT statements that define data transformations.
+            Models are compiled and executed to create/update tables and views in your database.
+
+            **Important**: This tool runs models only (SQL files). For CSV seed files, use load_seeds().
+            For running everything together (seeds + models + tests), use build_models().
+
             State-based selection modes (uses dbt state:modified selector):
             - select_state_modified: Run only models modified since last successful run (state:modified)
             - select_state_modified_plus_downstream: Run modified + downstream dependencies (state:modified+)
@@ -1557,12 +1563,27 @@ class DbtCoreMcpServer:
             Returns:
                 Execution results with status, models run, timing info, and optional schema_changes
 
+            See also:
+                - seed_data(): Load CSV files (must run before models that reference them)
+                - build_models(): Run models + tests together in DAG order
+                - test_models(): Run tests after models complete
+
             Examples:
-                - run_models(select="customers") - Run specific model
-                - run_models(select_state_modified=True) - Run only what changed
-                - run_models(select_state_modified=True, select_state_modified_plus_downstream=True) - Run changed + downstream
-                - run_models(select="tag:mart", full_refresh=True) - Full refresh marts
-                - run_models(select_state_modified=True, check_schema_changes=True) - Detect schema changes
+                # Run a specific model
+                run_models(select="customers")
+
+                # After loading seeds, run dependent models
+                seed_data()
+                run_models(select="stg_orders")
+
+                # Incremental: run only what changed
+                run_models(select_state_modified=True)
+
+                # Run changed models + everything downstream
+                run_models(select_state_modified=True, select_state_modified_plus_downstream=True)
+
+                # Full refresh marts (rebuild from scratch)
+                run_models(select="tag:mart", full_refresh=True)
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_run_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast, check_schema_changes)
@@ -1577,6 +1598,11 @@ class DbtCoreMcpServer:
             fail_fast: bool = False,
         ) -> dict[str, Any]:
             """Run dbt tests on models and sources.
+
+            **When to use**: After running models to validate data quality. Tests check constraints
+            like uniqueness, not-null, relationships, and custom data quality rules.
+
+            **Important**: Ensure seeds and models are built before running tests that depend on them.
 
             State-based selection modes (uses dbt state:modified selector):
             - select_state_modified: Test only models modified since last successful run (state:modified)
@@ -1596,6 +1622,25 @@ class DbtCoreMcpServer:
 
             Returns:
                 Test results with status and failures
+
+            See also:
+                - run_models(): Execute models before testing them
+                - build_models(): Run models + tests together automatically
+                - load_seeds(): Load seeds if tests reference seed data
+
+            Examples:
+                # After building a model, test it
+                run_models(select="customers")
+                test_models(select="customers")
+
+                # Test only generic tests (not singular)
+                test_models(select="test_type:generic")
+
+                # Test everything that changed
+                test_models(select_state_modified=True)
+
+                # Stop on first failure for quick feedback
+                test_models(fail_fast=True)
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_test_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, fail_fast)
@@ -1610,10 +1655,20 @@ class DbtCoreMcpServer:
             full_refresh: bool = False,
             fail_fast: bool = False,
         ) -> dict[str, Any]:
-            """Run DBT build (run + test in DAG order).
+            """Run dbt build (execute models and tests together in correct dependency order).
+
+            **When to use**: This is the recommended "do everything" command that runs seeds, models,
+            snapshots, and tests in the correct order based on your DAG. It automatically handles
+            dependencies, so you don't need to run load_seeds() → run_models() → test_models() separately.
+
+            **How it works**: Executes resources in dependency order:
+            1. Seeds (if selected)
+            2. Models (with their upstream dependencies)
+            3. Tests (after their parent models complete)
+            4. Snapshots (if selected)
 
             State-based selection modes (uses dbt state:modified selector):
-            - select_state_modified: Build only models modified since last successful run (state:modified)
+            - select_state_modified: Build only resources modified since last successful run (state:modified)
             - select_state_modified_plus_downstream: Build modified + downstream dependencies (state:modified+)
               Note: Requires select_state_modified=True
 
@@ -1624,19 +1679,43 @@ class DbtCoreMcpServer:
             Args:
                 select: Manual selector
                 exclude: Exclude selector
-                select_state_modified: Use state:modified selector (changed models only)
+                select_state_modified: Use state:modified selector (changed resources only)
                 select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 full_refresh: Force full refresh of incremental models
                 fail_fast: Stop execution on first failure
 
             Returns:
                 Build results with status, models run/tested, and timing info
+
+            See also:
+                - run_models(): Run only models (no tests)
+                - test_models(): Run only tests
+                - load_seeds(): Run only seeds
+
+            Examples:
+                # Full project build (first-time setup or comprehensive run)
+                build_models()
+
+                # Build only what changed (efficient incremental workflow)
+                build_models(select_state_modified=True)
+
+                # Build changed resources + everything downstream
+                build_models(select_state_modified=True, select_state_modified_plus_downstream=True)
+
+                # Build specific model and its dependencies + tests
+                build_models(select="customers")
+
+                # Build all marts (includes their seed dependencies automatically)
+                build_models(select="tag:mart")
+
+                # Quick feedback: stop on first test failure
+                build_models(fail_fast=True)
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_build_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast)
 
         @self.app.tool()
-        async def seed_data(
+        async def load_seeds(
             ctx: Context,
             select: str | None = None,
             exclude: str | None = None,
@@ -1647,7 +1726,12 @@ class DbtCoreMcpServer:
         ) -> dict[str, Any]:
             """Load seed data (CSV files) from seeds/ directory into database tables.
 
-            Seeds are typically used for reference data like country codes, product categories, etc.
+            **When to use**: Run this before building models or tests that depend on reference data.
+            Seeds must be loaded before models that reference them can execute.
+
+            **What are seeds**: CSV files containing static reference data (country codes,
+            product categories, lookup tables, etc.). Unlike models (which are .sql files),
+            seeds are CSV files that are loaded directly into database tables.
 
             State-based selection modes (detects changed CSV files):
             - select_state_modified: Load only seeds modified since last successful run (state:modified)
@@ -1674,10 +1758,28 @@ class DbtCoreMcpServer:
             Returns:
                 Seed results with status and loaded seed info
 
+            See also:
+                - run_models(): Execute .sql model files (not CSV seeds)
+                - build_models(): Runs both seeds and models together in DAG order
+                - test_models(): Run tests (requires seeds to be loaded first if tests reference them)
+
             Examples:
-                seed_data()  # Load all seeds
-                seed_data(select_state_modified=True)  # Load only changed CSVs
-                seed_data(select="raw_customers")  # Load specific seed
+                # Before running tests that depend on reference data
+                load_seeds()
+                test_models(select="test_customer_country_code")
+
+                # After adding a new CSV lookup table
+                load_seeds(select="new_product_categories")
+
+                # Fix "relation does not exist" errors from models referencing seeds
+                load_seeds()  # Load missing seed tables first
+                run_models(select="stg_orders")
+
+                # Incremental workflow: only reload what changed
+                load_seeds(select_state_modified=True)
+
+                # Full refresh of a specific seed
+                load_seeds(select="country_codes", full_refresh=True)
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_seed_data(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, show)
