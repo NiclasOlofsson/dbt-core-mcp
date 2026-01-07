@@ -647,10 +647,16 @@ class DbtCoreMcpServer:
 
         return info
 
-    async def toolImpl_query_database(self, sql: str, output_file: str | None = None, output_format: str = "json") -> dict[str, Any]:
+    async def toolImpl_query_database(self, ctx: Context | None, sql: str, output_file: str | None = None, output_format: str = "json") -> dict[str, Any]:
         """Implementation for query_database tool."""
+
+        # Define progress callback if context available
+        async def progress_callback(current: int, total: int, message: str) -> None:
+            if ctx:
+                await ctx.report_progress(progress=current, total=total, message=message)
+
         # Execute query using dbt show --inline
-        result = await self.runner.invoke_query(sql)  # type: ignore
+        result = await self.runner.invoke_query(sql, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Unknown error"
@@ -1521,7 +1527,7 @@ class DbtCoreMcpServer:
                 CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_query_database(sql, output_file, output_format)
+            return await self.toolImpl_query_database(ctx, sql, output_file, output_format)
 
         @self.app.tool()
         async def run_models(

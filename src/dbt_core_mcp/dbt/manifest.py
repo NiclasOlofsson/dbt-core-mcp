@@ -64,11 +64,24 @@ class ManifestLoader:
         """
         self.manifest_path = manifest_path
         self._manifest: dict[str, Any] | None = None
+        self._manifest_mtime: float | None = None  # Track last modification time
 
-    async def load(self) -> None:
-        """Load the manifest from disk."""
+    async def load(self, force: bool = False) -> None:
+        """
+        Load the manifest from disk.
+
+        Args:
+            force: If True, reload even if already loaded. If False, only reload if file changed.
+        """
         if not self.manifest_path.exists():
             raise FileNotFoundError(f"Manifest not found: {self.manifest_path}")
+
+        # Check if reload is needed
+        current_mtime = self.manifest_path.stat().st_mtime
+
+        if not force and self._manifest is not None and self._manifest_mtime == current_mtime:
+            logger.debug("Manifest already loaded and unchanged, skipping reload")
+            return
 
         logger.debug(f"Loading manifest from {self.manifest_path}")
 
@@ -77,6 +90,7 @@ class ManifestLoader:
                 return json.load(f)
 
         self._manifest = await asyncio.to_thread(_read_manifest)
+        self._manifest_mtime = current_mtime
         logger.info("Manifest loaded successfully")
 
     def is_loaded(self) -> bool:

@@ -16,8 +16,9 @@ from typing import Any, Callable
 
 import psutil
 
-from ..utils.env_detector import get_env_vars
+from ..utils.env_detector import detect_dbt_adapter, get_env_vars
 from ..utils.process_check import is_dbt_running, wait_for_dbt_completion
+from ..utils.warehouse_adapter import WarehouseAdapter, create_warehouse_adapter
 from .runner import DbtRunnerResult
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ class BridgeRunner:
         self.profiles_dir = self.project_dir if (self.project_dir / "profiles.yml").exists() else Path.home() / ".dbt"
         logger.info(f"Using profiles directory: {self.profiles_dir}")
 
+        # Initialize warehouse adapter for pre-warming
+        self._warehouse_adapter: WarehouseAdapter | None = None
+        self._init_warehouse_adapter()
+
     def _get_project_config(self) -> dict[str, Any]:
         """
         Lazy-load and cache dbt_project.yml configuration.
@@ -86,6 +91,23 @@ class BridgeRunner:
 
         return self._project_config if self._project_config is not None else {}
 
+    def _init_warehouse_adapter(self) -> None:
+        """
+        Initialize the warehouse adapter based on dbt profile configuration.
+
+        Detects the database type from profiles.yml and creates the appropriate
+        adapter (Databricks, Snowflake, or no-op default).
+        """
+        try:
+            adapter_type = detect_dbt_adapter(self.project_dir)
+            self._warehouse_adapter = create_warehouse_adapter(self.project_dir, adapter_type)
+            logger.info(f"Initialized warehouse adapter for {adapter_type}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize warehouse adapter: {e}, using no-op adapter")
+            from ..utils.warehouse_adapter import NoOpWarehouseAdapter
+
+            self._warehouse_adapter = NoOpWarehouseAdapter()
+
     async def invoke(self, args: list[str], progress_callback: Callable[[int, int, str], Any] | None = None, expected_total: int | None = None) -> DbtRunnerResult:
         """
         Execute a dbt command via subprocess bridge.
@@ -100,15 +122,41 @@ class BridgeRunner:
         Returns:
             Result of the command execution
         """
+        invoke_total_start = time.time()
+
+        # Pre-warm warehouse if needed (for commands that require database access)
+        if self._needs_database_access(args):
+            try:
+                if self._warehouse_adapter:
+                    prewarm_start = time.time()
+                    await self._warehouse_adapter.prewarm(progress_callback)
+                    prewarm_end = time.time()
+                    logger.info(f"Warehouse pre-warming took {prewarm_end - prewarm_start:.2f}s")
+            except Exception as e:
+                logger.warning(f"Warehouse pre-warming failed (continuing anyway): {e}")
+
         # Check if dbt is already running and wait for completion
+        concurrency_start = time.time()
         if is_dbt_running(self.project_dir):
             logger.info("dbt process detected, waiting for completion...")
+
+            # Report waiting state
+            if progress_callback:
+                try:
+                    result = progress_callback(0, 1, "Waiting for another dbt process to finish...")
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
+
             if not wait_for_dbt_completion(self.project_dir, timeout=10.0, poll_interval=0.2):
                 logger.error("Timeout waiting for dbt process to complete")
                 return DbtRunnerResult(
                     success=False,
                     exception=RuntimeError("dbt is already running in this project. Please wait for it to complete."),
                 )
+        concurrency_end = time.time()
+        logger.info(f"Concurrency check took {concurrency_end - concurrency_start:.2f}s")
 
         # Build inline Python script to execute dbtRunner
         script = self._build_script(args)
@@ -133,6 +181,7 @@ class BridgeRunner:
         proc = None
         try:
             logger.info("Starting subprocess...")
+            subprocess_start = time.time()
             # Use create_subprocess_exec for proper async process handling
             proc = await asyncio.create_subprocess_exec(
                 *full_command,
@@ -142,8 +191,20 @@ class BridgeRunner:
                 stdin=asyncio.subprocess.DEVNULL,
                 env=env,
             )
+            subprocess_created = time.time()
+            logger.info(f"Subprocess creation took {subprocess_created - subprocess_start:.2f}s")
+
+            # Report initial progress immediately
+            if progress_callback:
+                try:
+                    result = progress_callback(0, 1, "Starting dbt...")
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
 
             # Stream output and capture progress if callback provided
+            dbt_execution_start = time.time()
             if progress_callback:
                 logger.info("Progress callback provided, enabling streaming output")
                 stdout, stderr = await self._stream_with_progress(proc, progress_callback, expected_total)
@@ -167,8 +228,12 @@ class BridgeRunner:
                         exception=RuntimeError(f"dbt command timed out after {self.timeout} seconds"),
                     )
 
+            dbt_execution_end = time.time()
+            logger.info(f"dbt execution (from start to completion) took {dbt_execution_end - dbt_execution_start:.2f}s")
+
             returncode = proc.returncode
             logger.info(f"Subprocess completed with return code: {returncode}")
+            logger.info(f"Total invoke() time: {time.time() - invoke_total_start:.2f}s")
 
             # Parse result from stdout
             if returncode == 0:
@@ -578,7 +643,7 @@ class BridgeRunner:
         """Get the path to the manifest.json file."""
         return self._target_dir / "manifest.json"
 
-    async def invoke_query(self, sql: str) -> DbtRunnerResult:
+    async def invoke_query(self, sql: str, progress_callback: Callable[[int, int, str], Any] | None = None) -> DbtRunnerResult:
         """
         Execute a SQL query using dbt show --inline.
 
@@ -588,6 +653,7 @@ class BridgeRunner:
         Args:
             sql: SQL query to execute (supports Jinja: {{ ref('model') }}, {{ source('src', 'table') }})
                  Include LIMIT in the SQL if you want to limit results.
+            progress_callback: Optional callback for progress updates (current, total, message)
 
         Returns:
             Result with query output in JSON format
@@ -604,8 +670,30 @@ class BridgeRunner:
             "json",
         ]
 
-        # Execute the command
-        result = await self.invoke(args)
+        # Report query execution starting
+        query_start = time.time()
+        if progress_callback:
+            try:
+                result = progress_callback(0, 1, "Executing query...")
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.warning(f"Progress callback error: {e}")
+
+        # Execute the command with progress callback
+        invoke_start = time.time()
+        result = await self.invoke(args, progress_callback=progress_callback)
+        invoke_end = time.time()
+        logger.info(f"invoke() took {invoke_end - invoke_start:.2f}s total")
+
+        # Report query completion
+        if progress_callback and result.success:
+            try:
+                completion_result = progress_callback(1, 1, "Query complete")
+                if asyncio.iscoroutine(completion_result):
+                    await completion_result
+            except Exception as e:
+                logger.warning(f"Progress callback error: {e}")
 
         return result
 
@@ -645,6 +733,37 @@ class BridgeRunner:
         result = await self.invoke(args)
 
         return result
+
+    def _needs_database_access(self, args: list[str]) -> bool:
+        """
+        Determine if a dbt command requires database access.
+
+        Commands like 'parse', 'deps', 'clean', 'list' don't need database access.
+        Commands like 'run', 'test', 'build', 'seed', 'snapshot', 'show' do.
+
+        Args:
+            args: dbt command arguments
+
+        Returns:
+            True if command needs database access, False otherwise
+        """
+        if not args:
+            return False
+
+        command = args[0].lower()
+
+        # Commands that DON'T need database access
+        no_db_commands = {
+            "parse",
+            "deps",
+            "clean",
+            "debug",  # debug checks connection but doesn't require warehouse to be running
+            "list",
+            "ls",
+            "compile",  # compile doesn't execute SQL, just generates it
+        }
+
+        return command not in no_db_commands
 
     def _build_script(self, args: list[str]) -> str:
         """
