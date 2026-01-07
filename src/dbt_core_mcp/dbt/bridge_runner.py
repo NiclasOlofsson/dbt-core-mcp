@@ -372,14 +372,19 @@ class BridgeRunner:
                         # Show statuses conditionally (only when > 0)
                         summary_parts = [f"{overall_progress}/{total_resources} completed"]
                         if ok_count > 0:
-                            summary_parts.append(f"{ok_count}✅")
+                            summary_parts.append(f"{ok_count} ✅")
                         if error_count > 0:
-                            summary_parts.append(f"{error_count}❌")
+                            summary_parts.append(f"{error_count} ❌")
                         if warn_count > 0:
-                            summary_parts.append(f"{warn_count}⚠️")
+                            summary_parts.append(f"{warn_count} ⚠️")
                         if skip_count > 0:
-                            summary_parts.append(f"{skip_count}⏭️")
+                            summary_parts.append(f"{skip_count} ⏭️")
                         summary_stats = " ".join(summary_parts)
+
+                        # Clear running models if all work is complete
+                        if overall_progress == total_resources and total_resources > 0:
+                            running_models.clear()
+                            running_start_times.clear()
 
                         # Format running list with elapsed times
                         max_display = 2
