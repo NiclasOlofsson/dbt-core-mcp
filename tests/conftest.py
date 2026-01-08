@@ -86,5 +86,5 @@ async def jaffle_shop_server():
     yield server
 
     # Cleanup: Stop persistent process if it was started
-    if server.runner and server.runner._dbt_process:
-        await server.runner._stop_persistent_process()
+    if server.runner and server.runner._dbt_process:  # type: ignore[reportPrivateUsage]
+        await server.runner._stop_persistent_process()  # type: ignore[reportPrivateUsage]

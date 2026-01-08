@@ -147,6 +147,10 @@ class BridgeRunner:
             cwd=self.project_dir,
             env=env,
         )
+        assert self._dbt_process is not None
+        assert self._dbt_process.stdout is not None
+        assert self._dbt_process.stderr is not None
+        assert self._dbt_process.stdin is not None
 
         # Wait for ready signal
         try:
@@ -184,6 +188,8 @@ class BridgeRunner:
         """Stop the persistent dbt process gracefully."""
         if self._dbt_process is None:
             return
+        assert self._dbt_process is not None
+        assert self._dbt_process.stdin is not None
 
         try:
             if self._dbt_process.returncode is None:
@@ -213,6 +219,9 @@ class BridgeRunner:
         """Execute a command using the persistent dbt process."""
         # Ensure process is started
         await self._start_persistent_process()
+        assert self._dbt_process is not None
+        assert self._dbt_process.stdin is not None
+        assert self._dbt_process.stdout is not None
 
         # Build request
         self._request_counter += 1
@@ -796,7 +805,9 @@ class BridgeRunner:
             if stderr_task and not stderr_task.done():
                 stderr_task.cancel()
             try:
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                tasks = [t for t in [stdout_task, stderr_task] if t is not None]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
             except Exception:
                 pass
             # Kill the process
@@ -811,7 +822,9 @@ class BridgeRunner:
             if stderr_task and not stderr_task.done():
                 stderr_task.cancel()
             try:
-                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                tasks = [t for t in [stdout_task, stderr_task] if t is not None]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
             except Exception:
                 pass
             raise
