@@ -65,13 +65,19 @@ class DatabricksWarehouseAdapter:
         logger.info("Pre-warming Databricks serverless warehouse...")
 
         # Report initial progress
+        logger.info(f"Progress callback is: {progress_callback}")
         if progress_callback:
+            logger.info("Invoking initial progress callback: 'Initializing warehouse...'")
             try:
                 result = progress_callback(0, 1, "Initializing warehouse...")
+                logger.info(f"Progress callback result type: {type(result)}")
                 if asyncio.iscoroutine(result):
                     await result
+                logger.info("Initial progress callback completed")
             except Exception as e:
                 logger.warning(f"Progress callback error: {e}")
+        else:
+            logger.warning("No progress callback provided to prewarm")
 
         # Get connection info from dbt profile
         try:

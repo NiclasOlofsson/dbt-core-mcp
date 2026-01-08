@@ -33,7 +33,7 @@ class BridgeRunner:
     from dbtRunner's structured results.
     """
 
-    def __init__(self, project_dir: Path, python_command: list[str], timeout: float | None = None):
+    def __init__(self, project_dir: Path, python_command: list[str], timeout: float | None = None, use_persistent_process: bool = True):
         """
         Initialize the bridge runner.
 
@@ -42,10 +42,12 @@ class BridgeRunner:
             python_command: Command to run Python in the user's environment
                           (e.g., ['uv', 'run', 'python'] or ['/path/to/venv/bin/python'])
             timeout: Timeout in seconds for dbt commands (default: None for no timeout)
+            use_persistent_process: If True, reuse a persistent dbt process for better performance
         """
         self.project_dir = project_dir.resolve()  # Ensure absolute path
         self.python_command = python_command
         self.timeout = timeout
+        self.use_persistent_process = use_persistent_process
         self._target_dir = self.project_dir / "target"
         self._project_config: dict[str, Any] | None = None  # Lazy-loaded project configuration
         self._project_config_mtime: float | None = None  # Track last modification time
@@ -57,6 +59,11 @@ class BridgeRunner:
         # Initialize warehouse adapter for pre-warming
         self._warehouse_adapter: WarehouseAdapter | None = None
         self._init_warehouse_adapter()
+
+        # Persistent dbt process for performance
+        self._dbt_process: asyncio.subprocess.Process | None = None
+        self._process_lock = asyncio.Lock()  # Ensure sequential access
+        self._request_counter = 0
 
     def _get_project_config(self) -> dict[str, Any]:
         """
@@ -108,6 +115,173 @@ class BridgeRunner:
 
             self._warehouse_adapter = NoOpWarehouseAdapter()
 
+    async def _start_persistent_process(self) -> None:
+        """Start the persistent dbt process if not already running."""
+        if self._dbt_process is not None and self._dbt_process.returncode is None:
+            # Process already running
+            return
+
+        logger.info("Starting persistent dbt process...")
+
+        # Build inline script for persistent dbt loop
+        loop_script = self._build_loop_script()
+
+        # Build command to run loop script
+        cmd = [*self.python_command, "-c", loop_script]
+
+        # Get environment variables
+        env_vars = get_env_vars(self.python_command)
+        env = None
+        if env_vars:
+            import os
+
+            env = os.environ.copy()
+            env.update(env_vars)
+
+        # Start process
+        self._dbt_process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.project_dir,
+            env=env,
+        )
+
+        # Wait for ready signal
+        try:
+            ready_line = await asyncio.wait_for(self._dbt_process.stdout.readline(), timeout=30.0)
+            ready_str = ready_line.decode().strip()
+
+            if not ready_str:
+                # No output - check stderr for errors
+                stderr_data = await asyncio.wait_for(self._dbt_process.stderr.read(), timeout=1.0)
+                stderr_str = stderr_data.decode() if stderr_data else "(no stderr)"
+                raise RuntimeError(f"Persistent process started but sent no ready message. stderr: {stderr_str[:500]}")
+
+            try:
+                ready_msg = json.loads(ready_str)
+            except json.JSONDecodeError:
+                # Invalid JSON - check stderr
+                stderr_data = await asyncio.wait_for(self._dbt_process.stderr.read(), timeout=1.0)
+                stderr_str = stderr_data.decode() if stderr_data else "(no stderr)"
+                raise RuntimeError(f"Invalid ready message: {ready_str[:200]}. stderr: {stderr_str[:500]}")
+
+            if ready_msg.get("type") == "ready":
+                logger.info(f"Persistent dbt process started (PID {self._dbt_process.pid})")
+            else:
+                raise RuntimeError(f"Unexpected ready message: {ready_msg}")
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for dbt process to become ready")
+            await self._stop_persistent_process()
+            raise RuntimeError("Failed to start persistent dbt process")
+        except Exception as e:
+            logger.error(f"Error starting persistent dbt process: {e}")
+            await self._stop_persistent_process()
+            raise
+
+    async def _stop_persistent_process(self) -> None:
+        """Stop the persistent dbt process gracefully."""
+        if self._dbt_process is None:
+            return
+
+        try:
+            if self._dbt_process.returncode is None:
+                # Send shutdown command
+                logger.info("Shutting down persistent dbt process...")
+                shutdown_msg = json.dumps({"shutdown": True}) + "\n"
+                self._dbt_process.stdin.write(shutdown_msg.encode())
+                await self._dbt_process.stdin.drain()
+
+                # Wait for graceful shutdown
+                try:
+                    await asyncio.wait_for(self._dbt_process.wait(), timeout=5.0)
+                    logger.info("Persistent dbt process shut down gracefully")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for process shutdown, killing...")
+                    self._dbt_process.kill()
+                    await self._dbt_process.wait()
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}, killing process...")
+            if self._dbt_process.returncode is None:
+                self._dbt_process.kill()
+                await self._dbt_process.wait()
+        finally:
+            self._dbt_process = None
+
+    async def _invoke_persistent(self, args: list[str], progress_callback: Callable[[int, int, str], Any] | None = None, expected_total: int | None = None) -> DbtRunnerResult:
+        """Execute a command using the persistent dbt process."""
+        # Ensure process is started
+        await self._start_persistent_process()
+
+        # Build request
+        self._request_counter += 1
+        request = {
+            "command": args,
+        }
+
+        # Send request
+        request_line = json.dumps(request) + "\n"
+        self._dbt_process.stdin.write(request_line.encode())
+        await self._dbt_process.stdin.drain()
+
+        # Read output with progress parsing (same as one-off subprocess!)
+        try:
+            if progress_callback:
+                logger.info("Progress callback provided, enabling streaming output")
+                stdout, stderr = await self._stream_with_progress(self._dbt_process, progress_callback, expected_total)
+            else:
+                logger.info("No progress callback, using buffered output")
+                # Read until we get the completion JSON
+                stdout_lines = []
+
+                while True:
+                    if self.timeout:
+                        line_bytes = await asyncio.wait_for(
+                            self._dbt_process.stdout.readline(),
+                            timeout=self.timeout,
+                        )
+                    else:
+                        line_bytes = await self._dbt_process.stdout.readline()
+
+                    if not line_bytes:
+                        break
+                    line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                    # Check if this is the completion marker
+                    if line.startswith('{"success":'):
+                        stdout_lines.append(line)  # Include completion marker
+                        break
+                    stdout_lines.append(line)
+
+                stdout = "\n".join(stdout_lines)
+                stderr = ""
+
+            # Parse success from last line (completion marker)
+            last_line = stdout.strip().split("\n")[-1] if stdout else ""
+            try:
+                completion = json.loads(last_line)
+                success = completion.get("success", False)
+            except json.JSONDecodeError:
+                # If no valid completion marker, assume failure
+                logger.warning("No valid completion marker found in output")
+                success = False
+
+            return DbtRunnerResult(success=success, stdout=stdout, stderr=stderr)
+
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for response from persistent process")
+            # Kill and restart process on timeout
+            await self._stop_persistent_process()
+            return DbtRunnerResult(
+                success=False,
+                exception=RuntimeError(f"Command timed out after {self.timeout} seconds"),
+            )
+        except Exception as e:
+            logger.error(f"Error communicating with persistent process: {e}")
+            # Kill and restart process on error
+            await self._stop_persistent_process()
+            return DbtRunnerResult(success=False, exception=e)
+
     async def invoke(self, args: list[str], progress_callback: Callable[[int, int, str], Any] | None = None, expected_total: int | None = None) -> DbtRunnerResult:
         """
         Execute a dbt command via subprocess bridge.
@@ -124,21 +298,53 @@ class BridgeRunner:
         """
         invoke_total_start = time.time()
 
+        # Debug: Check if progress_callback exists
+        logger.info(f"invoke() called with progress_callback: {progress_callback is not None}")
+
+        # Calculate setup steps for progress reporting
+        setup_steps = []
+        if self._needs_database_access(args) and self._warehouse_adapter:
+            setup_steps.append("warehouse")
+        setup_steps.append("concurrency")
+        if self.use_persistent_process:
+            setup_steps.append("lock")
+        total_setup_steps = len(setup_steps)
+        current_setup_step = 0
+
+        # Helper to report setup progress
+        async def report_setup_progress(message: str) -> None:
+            nonlocal current_setup_step
+            current_setup_step += 1  # Increment FIRST so we show progress immediately
+            logger.info(f"Setup progress: step {current_setup_step}/{total_setup_steps}: {message}")
+            if progress_callback:
+                try:
+                    result = progress_callback(current_setup_step, total_setup_steps, message)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    logger.info("Setup progress callback invoked successfully")
+                except Exception as e:
+                    logger.warning(f"Setup progress callback error: {e}")
+            else:
+                logger.warning(f"No progress_callback available for setup step: {message}")
+
         # Pre-warm warehouse if needed (for commands that require database access)
         if self._needs_database_access(args):
             try:
                 if self._warehouse_adapter:
+                    await report_setup_progress("Pre-warming warehouse...")
                     prewarm_start = time.time()
-                    await self._warehouse_adapter.prewarm(progress_callback)
+                    await self._warehouse_adapter.prewarm(None)  # Don't pass callback - we're handling progress
                     prewarm_end = time.time()
                     logger.info(f"Warehouse pre-warming took {prewarm_end - prewarm_start:.2f}s")
             except Exception as e:
                 logger.warning(f"Warehouse pre-warming failed (continuing anyway): {e}")
 
-        # Check if dbt is already running and wait for completion
+        # Check for external dbt processes (excluding our persistent process)
+        await report_setup_progress("Checking for running processes...")
         concurrency_start = time.time()
-        if is_dbt_running(self.project_dir):
-            logger.info("dbt process detected, waiting for completion...")
+        exclude_pid = self._dbt_process.pid if self._dbt_process else None
+        if is_dbt_running(self.project_dir, exclude_pid=exclude_pid):
+            logger.info("External dbt process detected, waiting for completion...")
 
             # Report waiting state
             if progress_callback:
@@ -150,13 +356,53 @@ class BridgeRunner:
                     logger.warning(f"Progress callback error: {e}")
 
             if not wait_for_dbt_completion(self.project_dir, timeout=10.0, poll_interval=0.2):
-                logger.error("Timeout waiting for dbt process to complete")
+                logger.error("Timeout waiting for external dbt process to complete")
                 return DbtRunnerResult(
                     success=False,
                     exception=RuntimeError("dbt is already running in this project. Please wait for it to complete."),
                 )
         concurrency_end = time.time()
         logger.info(f"Concurrency check took {concurrency_end - concurrency_start:.2f}s")
+
+        # Use persistent process if enabled
+        if self.use_persistent_process:
+            # Determine what we're waiting for
+            if self._process_lock.locked():
+                # Lock is held by another command
+                await report_setup_progress("Waiting for available process...")
+            elif self._dbt_process is None:
+                # Process doesn't exist yet - will need to start it
+                await report_setup_progress("Starting dbt process...")
+            else:
+                # Process exists, just acquiring lock
+                await report_setup_progress("Acquiring process lock...")
+
+            async with self._process_lock:
+                logger.info("Using persistent dbt process")
+
+                # Reset progress bar for dbt execution phase
+                # Setup is complete (3/3), now starting dbt execution (1/1000 = 0.1% minimal bar)
+                # Note: 0/N doesn't trigger visual reset, but 1/1000 gives tiny visible progress
+                logger.info(f"Resetting progress bar, progress_callback exists: {progress_callback is not None}")
+                if progress_callback:
+                    command = args[0] if args else ""
+                    reset_message = f"Starting dbt {command}..."
+
+                    try:
+                        logger.info(f"Invoking reset callback: 1/1000 - {reset_message}")
+                        result = progress_callback(1, 1000, reset_message)
+                        if asyncio.iscoroutine(result):
+                            await result
+                        logger.info("Reset callback completed successfully")
+                    except Exception as e:
+                        logger.warning(f"Progress callback error: {e}")
+
+                result = await self._invoke_persistent(args, progress_callback, expected_total)
+                logger.info(f"Total invoke() time: {time.time() - invoke_total_start:.2f}s")
+                return result
+
+        # Fall back to one-off subprocess
+        logger.info("Using one-off subprocess (persistent mode disabled)")
 
         # Build inline Python script to execute dbtRunner
         script = self._build_script(args)
@@ -346,6 +592,11 @@ class BridgeRunner:
                     # Log ALL lines to see the actual output format
                     logger.info(f"stdout[{line_count}]: {line}")
 
+                    # Check for completion marker from persistent process
+                    if line.startswith('{"success":'):
+                        logger.info(f"Completion marker detected, stopping read: {line}")
+                        break
+
                     # Check for progress indicators
                     match = progress_pattern.match(line)
                     if match:
@@ -382,10 +633,16 @@ class BridgeRunner:
                                 # Extract from after "seed file " (10 chars)
                                 rest = model_info[idx + 10 :]
                                 model_name = rest.split()[0] if rest.split() else model_info
-                        # For tests, handle "test " prefix
+                        # For tests, handle "test " and "unit_test " prefixes
                         elif model_info.startswith("test "):
                             # Remove "test " prefix and get the name
                             model_name = model_info[5:].split()[0] if len(model_info) > 5 else model_info
+                        elif model_info.startswith("unit_test "):
+                            # For unit tests, extract the full test path after "unit_test "
+                            # Format: "unit_test model_name::test_name"
+                            rest = model_info[10:]  # Skip "unit_test "
+                            # Extract up to any trailing markers like [RUN]
+                            model_name = rest.split("  [")[0].strip() if "  [" in rest else rest.strip()
                         else:
                             # For other cases, just take the first word
                             first_word = model_info.split()[0] if model_info.split() else model_info
@@ -433,18 +690,23 @@ class BridgeRunner:
                                 running_start_times.pop(model_name, None)
                                 logger.info(f"Model completed: {model_name}, status: {status}")
 
-                        # Build progress message: "5/20 completed • 3✅ 1❌ 1⚠️ 1⏭️ • Running (2): customers (5s)"
+                        # Build progress message: "5/20 completed (✅ 3, ❌ 1, ⚠️ 1) • Running (2): customers (5s)"
                         # Show statuses conditionally (only when > 0)
-                        summary_parts = [f"{overall_progress}/{total_resources} completed"]
+                        status_parts = []
                         if ok_count > 0:
-                            summary_parts.append(f"{ok_count} ✅")
+                            status_parts.append(f"✅ {ok_count}")
                         if error_count > 0:
-                            summary_parts.append(f"{error_count} ❌")
+                            status_parts.append(f"❌ {error_count}")
                         if warn_count > 0:
-                            summary_parts.append(f"{warn_count} ⚠️")
+                            status_parts.append(f"⚠️ {warn_count}")
                         if skip_count > 0:
-                            summary_parts.append(f"{skip_count} ⏭️")
-                        summary_stats = " ".join(summary_parts)
+                            status_parts.append(f"⏭️ {skip_count}")
+
+                        # Format: "5/14 completed (✅ 3, ❌ 2)" or just "5/14 completed" if no statuses yet
+                        if status_parts:
+                            summary_stats = f"{overall_progress}/{total_resources} completed ({', '.join(status_parts)})"
+                        else:
+                            summary_stats = f"{overall_progress}/{total_resources} completed"
 
                         # Clear running models if all work is complete
                         if overall_progress == total_resources and total_resources > 0:
@@ -473,6 +735,7 @@ class BridgeRunner:
                         # Call progress callback with overall progress and accumulated message (non-blocking)
                         if accumulated_message:  # Only call if we have a message
                             try:
+                                logger.info(f"PROGRESS CALLBACK: ({overall_progress}/{total_resources}) {accumulated_message}")
                                 result = progress_callback(overall_progress, total_resources, accumulated_message)
                                 if asyncio.iscoroutine(result):
                                     await result
@@ -494,6 +757,9 @@ class BridgeRunner:
                         break
                     line = line_bytes.decode("utf-8", errors="replace").rstrip()
                     stderr_lines.append(line)
+                    # Log stderr in real-time to see bridge script diagnostics
+                    if line:
+                        logger.info(f"stderr: {line}")
             except asyncio.CancelledError:
                 logger.info("stderr reader cancelled")
                 raise
@@ -501,42 +767,60 @@ class BridgeRunner:
                 logger.warning(f"stderr reader error: {e}")
 
         # Run both readers concurrently with timeout
-        readers_task = None
+        stdout_task = None
+        stderr_task = None
         try:
-            # Create the gather task
-            readers_task = asyncio.gather(read_stdout(), read_stderr(), return_exceptions=False)
+            # Create tasks for both readers
+            stdout_task = asyncio.create_task(read_stdout())
+            stderr_task = asyncio.create_task(read_stderr())
 
+            # Wait for stdout to complete (it will break on completion marker)
             if self.timeout:
-                await asyncio.wait_for(readers_task, timeout=self.timeout)
+                await asyncio.wait_for(stdout_task, timeout=self.timeout)
             else:
-                await readers_task
+                await stdout_task
+
+            # Once stdout is done, cancel stderr (which is likely still blocking)
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except asyncio.CancelledError:
+                    pass
 
         except asyncio.TimeoutError:
             logger.error(f"dbt command timed out after {self.timeout} seconds, killing process")
-            # Cancel the reader tasks
-            if readers_task and not readers_task.done():
-                readers_task.cancel()
-                try:
-                    await readers_task
-                except asyncio.CancelledError:
-                    pass
+            # Cancel both reader tasks
+            if stdout_task and not stdout_task.done():
+                stdout_task.cancel()
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
+            try:
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            except Exception:
+                pass
             # Kill the process
             proc.kill()
             await proc.wait()
             raise RuntimeError(f"dbt command timed out after {self.timeout} seconds")
         except asyncio.CancelledError:
             logger.info("Stream readers cancelled")
-            # Cancel the reader tasks
-            if readers_task and not readers_task.done():
-                readers_task.cancel()
-                try:
-                    await readers_task
-                except asyncio.CancelledError:
-                    pass
+            # Cancel both reader tasks
+            if stdout_task and not stdout_task.done():
+                stdout_task.cancel()
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
+            try:
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            except Exception:
+                pass
             raise
         finally:
-            # Ensure process completes and readers are done
-            if proc.returncode is None:
+            # For one-off subprocesses, ensure process completes
+            # For persistent processes, DON'T wait (process stays alive)
+            # We can detect persistent by checking if we have _dbt_process
+            is_persistent = hasattr(self, "_dbt_process") and self._dbt_process is not None and proc.pid == self._dbt_process.pid
+            if not is_persistent and proc.returncode is None:
                 await proc.wait()
 
         return "\n".join(stdout_lines), "\n".join(stderr_lines)
@@ -643,6 +927,20 @@ class BridgeRunner:
         """Get the path to the manifest.json file."""
         return self._target_dir / "manifest.json"
 
+    async def shutdown(self) -> None:
+        """Shutdown the bridge runner and clean up resources."""
+        await self._stop_persistent_process()
+
+    def __del__(self):
+        """Cleanup on garbage collection."""
+        # Try to stop persistent process on cleanup
+        if hasattr(self, "_dbt_process") and self._dbt_process and self._dbt_process.returncode is None:
+            logger.warning("BridgeRunner deleted with active process, forcing cleanup")
+            try:
+                self._dbt_process.kill()
+            except Exception as e:
+                logger.warning(f"Error killing process during cleanup: {e}")
+
     async def invoke_query(self, sql: str, progress_callback: Callable[[int, int, str], Any] | None = None) -> DbtRunnerResult:
         """
         Execute a SQL query using dbt show --inline.
@@ -671,7 +969,6 @@ class BridgeRunner:
         ]
 
         # Report query execution starting
-        query_start = time.time()
         if progress_callback:
             try:
                 result = progress_callback(0, 1, "Executing query...")
@@ -814,3 +1111,92 @@ except Exception as e:
     sys.exit(1)
 """
         return script
+
+    def _build_loop_script(self) -> str:
+        """
+        Build inline Python script for persistent dbt loop.
+
+        Returns:
+            Python script as string
+        """
+        # Use placeholder replacement to avoid f-string escaping issues
+        script = """
+import json
+import sys
+import os
+
+# Disable buffering for immediate I/O
+sys.stdin.reconfigure(line_buffering=True)
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+try:
+    from dbt.cli.main import dbtRunner
+except ImportError as e:
+    error_msg = {"type": "error", "error": f"Failed to import dbtRunner: {e}"}
+    print(json.dumps(error_msg), flush=True)
+    sys.exit(1)
+
+# Initialize dbtRunner once
+dbt = dbtRunner()
+
+# Set environment for text output
+os.environ['DBT_USE_COLORS'] = '0'
+os.environ['DBT_PRINTER_WIDTH'] = '80'
+
+# Signal ready
+ready_msg = {"type": "ready"}
+print(json.dumps(ready_msg), flush=True)
+
+# Process commands in a loop
+while True:
+    try:
+        # Read command from stdin (blocking)
+        line = sys.stdin.readline()
+        if not line:
+            # EOF - client disconnected
+            break
+
+        request = json.loads(line.strip())
+
+        # Check for shutdown command
+        if request.get("shutdown"):
+            break
+
+        # Extract command details
+        command_args = request.get("command", [])
+        
+        # Add profiles_dir if not already present
+        if "--profiles-dir" not in command_args:
+            command_args = [*command_args, "--profiles-dir", "PROFILES_DIR_PLACEHOLDER"]
+
+        # Add text log format for consistent output
+        if "--log-format" not in command_args:
+            command_args = [*command_args, "--log-format", "text"]
+
+        # Execute command - output goes to stdout naturally
+        try:
+            print(f"[DBT-BRIDGE] Running command: {command_args[0] if command_args else 'unknown'}", file=sys.stderr, flush=True)
+            result = dbt.invoke(command_args)
+            success = result.success
+        except Exception as e:
+            success = False
+            print(f"Error executing dbt command: {e}", file=sys.stderr, flush=True)
+
+        # Ensure all dbt output is flushed before sending completion marker
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+        # Send completion marker as JSON on last line
+        completion = {"success": success}
+        print(json.dumps(completion), flush=True)
+
+    except json.JSONDecodeError as e:
+        error_response = {"type": "error", "error": f"Invalid JSON: {e}"}
+        print(json.dumps(error_response), flush=True)
+    except Exception as e:
+        error_response = {"type": "error", "error": f"Unexpected error: {e}"}
+        print(json.dumps(error_response), flush=True)
+"""
+        # Replace placeholder with actual profiles_dir (use repr to escape backslashes on Windows)
+        return script.replace('"PROFILES_DIR_PLACEHOLDER"', repr(str(self.profiles_dir)))

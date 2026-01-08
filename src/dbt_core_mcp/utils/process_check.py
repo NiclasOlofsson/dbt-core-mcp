@@ -11,12 +11,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def is_dbt_running(project_dir: Path) -> bool:
+def is_dbt_running(project_dir: Path, exclude_pid: int | None = None) -> bool:
     """
     Check if dbt is currently running in the specified project directory.
 
     Args:
         project_dir: Path to the dbt project directory to check
+        exclude_pid: Optional PID to exclude from detection (e.g., our own daemon process)
 
     Returns:
         True if a dbt process is detected running in the project directory
@@ -34,6 +35,10 @@ def is_dbt_running(project_dir: Path) -> bool:
     try:
         for proc in psutil.process_iter(["pid", "name", "cmdline", "cwd"]):
             try:
+                # Skip if this is the excluded PID (our own daemon)
+                if exclude_pid and proc.info.get("pid") == exclude_pid:
+                    continue
+
                 # Check if this is a dbt-related process
                 cmdline = proc.info.get("cmdline") or []
                 if not cmdline:
@@ -45,6 +50,12 @@ def is_dbt_running(project_dir: Path) -> bool:
 
                 # Skip if this is our own MCP server or Python imports
                 if "dbt-core-mcp" in cmdline_str or "dbt_core_mcp" in cmdline_str:
+                    continue
+
+                # Skip MCP persistent dbt processes (identifiable by their loop script markers)
+                # These processes run idle waiting for stdin and don't interfere with external dbt commands
+                if '"type": "ready"' in cmdline_str or 'type": "ready' in cmdline_str:
+                    logger.debug(f"Skipping MCP persistent process (PID {proc.info['pid']})")
                     continue
 
                 # Look for actual dbt CLI usage: 'dbt run', 'dbt parse', 'python -m dbt.cli.main', etc.

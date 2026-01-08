@@ -75,6 +75,16 @@ async def jaffle_shop_server():
     # Use the example jaffle_shop project
     project_dir = Path(__file__).parent.parent / "examples" / "jaffle_shop"
     server = create_server(str(project_dir))
+
     # Initialize with a mock context (no workspace roots for tests)
     await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
-    return server
+
+    # IMPORTANT: Disable persistent process for tests to avoid state contamination between tests
+    if server.runner:
+        server.runner.use_persistent_process = False
+
+    yield server
+
+    # Cleanup: Stop persistent process if it was started
+    if server.runner and server.runner._dbt_process:
+        await server.runner._stop_persistent_process()
