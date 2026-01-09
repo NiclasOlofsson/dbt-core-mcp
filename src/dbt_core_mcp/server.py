@@ -61,6 +61,21 @@ class DbtCoreMcpServer:
             - Use the tools to interact with your dbt project
             - Query model lineage and dependencies
             - Run and test dbt models
+            
+            ## Subagent Delegation Protocol
+            
+            ALWAYS use #runSubagent for dbt data exploration and analysis. Your context window fills quickly with query results - avoid this by delegating complex workflows to subagents.
+            
+            When to delegate to #runSubagent:
+            - Data exploration across multiple models/sources
+            - Multi-query analysis workflows  
+            - Large result sets (>100 rows expected)
+            - Impact analysis requiring sample queries
+            - Any workflow involving: schema inspection → queries → analysis
+            
+            The subagent handles all the heavy lifting and returns only a concise summary, keeping your main context clean.
+            
+            Single simple queries with known schema: Execute directly using the tools.
             """,
             on_duplicate_resources="warn",
             on_duplicate_prompts="replace",
