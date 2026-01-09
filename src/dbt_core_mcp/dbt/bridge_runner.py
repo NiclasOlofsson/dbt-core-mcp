@@ -546,6 +546,7 @@ class BridgeRunner:
         Args:
             proc: The running subprocess
             progress_callback: Async callback(current, total, message)
+            expected_total: Expected total number of resources
 
         Returns:
             Tuple of (stdout, stderr) as strings
@@ -605,6 +606,17 @@ class BridgeRunner:
                     if line.startswith('{"success":'):
                         logger.info(f"Completion marker detected, stopping read: {line}")
                         break
+
+                    # Detect when parsing completes and execution begins
+                    # Line pattern: "HH:MM:SS  Concurrency: N threads (target='...')"
+                    if "Concurrency:" in line and "threads" in line and progress_callback:
+                        try:
+                            result = progress_callback(1, 1000, "Executing...")
+                            if asyncio.iscoroutine(result):
+                                await result
+                            logger.info("Updated progress to 'Executing...'")
+                        except Exception as e:
+                            logger.warning(f"Progress callback error on concurrency line: {e}")
 
                     # Check for progress indicators
                     match = progress_pattern.match(line)
@@ -956,7 +968,7 @@ class BridgeRunner:
 
     async def invoke_query(self, sql: str, progress_callback: Callable[[int, int, str], Any] | None = None) -> DbtRunnerResult:
         """
-        Execute a SQL query using dbt show --inline.
+        Execute a SQL query using dbt show.
 
         This method supports Jinja templating including {{ ref() }} and {{ source() }}.
         The SQL should include LIMIT clause if needed - no automatic limiting is applied.
@@ -969,8 +981,8 @@ class BridgeRunner:
         Returns:
             Result with query output in JSON format
         """
-        # Use dbt show --inline with JSON output
-        # --limit -1 disables the automatic LIMIT that dbt show adds (returns all rows)
+        # Use --inline for Jinja support with ref() and source()
+        # Use --no-populate-cache to skip expensive information_schema queries
         args = [
             "show",
             "--inline",
@@ -979,6 +991,7 @@ class BridgeRunner:
             "-1",
             "--output",
             "json",
+            "--no-populate-cache",
         ]
 
         # Report query execution starting

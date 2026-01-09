@@ -651,6 +651,10 @@ Want to help make this better? **The best contribution you can make is actually 
 
 Of course, code contributions are welcome too! Check out [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines. But seriously, just using it and telling us what works (or doesn't) is incredibly valuable.
 
+## Learn More
+
+- **[Technical Architecture](TECHNICAL.md)** - Deep dive into zero-config philosophy, bridge architecture, performance optimizations, and design decisions. For the curious who want to understand how it all works under the hood.
+
 ## License
 
 MIT License - see LICENSE file for details.

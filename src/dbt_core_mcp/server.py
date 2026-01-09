@@ -655,7 +655,7 @@ class DbtCoreMcpServer:
             if ctx:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
-        # Execute query using dbt show --inline
+        # Execute query using dbt show with --no-populate-cache for optimal performance
         result = await self.runner.invoke_query(sql, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
@@ -799,6 +799,7 @@ class DbtCoreMcpServer:
         full_refresh: bool = False,
         fail_fast: bool = False,
         check_schema_changes: bool = False,
+        cache_selected_only: bool = True,
     ) -> dict[str, Any]:
         """Implementation for run_models tool."""
         # Prepare state-based selection (validates and returns selector)
@@ -815,6 +816,11 @@ class DbtCoreMcpServer:
 
         # Build command args
         args = ["run"]
+
+        # Optimize cache: only cache schemas containing selected models (if enabled)
+        # Default True for performance, can be disabled if full caching needed
+        if cache_selected_only and (select or selector or select_state_modified):
+            args.append("--cache-selected-only")
 
         # Add selector if we have one (state-based or manual)
         if selector:
@@ -1037,6 +1043,7 @@ class DbtCoreMcpServer:
         select_state_modified_plus_downstream: bool = False,
         full_refresh: bool = False,
         fail_fast: bool = False,
+        cache_selected_only: bool = True,
     ) -> dict[str, Any]:
         """Implementation of build_models tool."""
         # Prepare state-based selection (validates and returns selector)
@@ -1053,6 +1060,11 @@ class DbtCoreMcpServer:
 
         # Build command args
         args = ["build"]
+
+        # Optimize cache: only cache schemas containing selected models (if enabled)
+        # Default True for performance, can be disabled if full caching needed
+        if cache_selected_only and (select or selector or select_state_modified):
+            args.append("--cache-selected-only")
 
         # Add selector if we have one (state-based or manual)
         if selector:
@@ -1539,6 +1551,7 @@ class DbtCoreMcpServer:
             full_refresh: bool = False,
             fail_fast: bool = False,
             check_schema_changes: bool = False,
+            cache_selected_only: bool = True,
         ) -> dict[str, Any]:
             """Run dbt models (compile SQL and execute against database).
 
@@ -1565,6 +1578,7 @@ class DbtCoreMcpServer:
                 full_refresh: Force full refresh of incremental models
                 fail_fast: Stop execution on first failure
                 check_schema_changes: Detect schema changes and recommend downstream runs
+                cache_selected_only: Only cache schemas for selected models (default True for performance)
 
             Returns:
                 Execution results with status, models run, timing info, and optional schema_changes
@@ -1592,7 +1606,7 @@ class DbtCoreMcpServer:
                 run_models(select="tag:mart", full_refresh=True)
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_run_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast, check_schema_changes)
+            return await self.toolImpl_run_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast, check_schema_changes, cache_selected_only)
 
         @self.app.tool()
         async def test_models(
@@ -1660,6 +1674,7 @@ class DbtCoreMcpServer:
             select_state_modified_plus_downstream: bool = False,
             full_refresh: bool = False,
             fail_fast: bool = False,
+            cache_selected_only: bool = True,
         ) -> dict[str, Any]:
             """Run dbt build (execute models and tests together in correct dependency order).
 
@@ -1689,6 +1704,7 @@ class DbtCoreMcpServer:
                 select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
                 full_refresh: Force full refresh of incremental models
                 fail_fast: Stop execution on first failure
+                cache_selected_only: Only cache schemas for selected models (default True for performance)
 
             Returns:
                 Build results with status, models run/tested, and timing info
@@ -1718,7 +1734,7 @@ class DbtCoreMcpServer:
                 build_models(fail_fast=True)
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_build_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast)
+            return await self.toolImpl_build_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, full_refresh, fail_fast, cache_selected_only)
 
         @self.app.tool()
         async def load_seeds(
