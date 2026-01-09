@@ -20,7 +20,10 @@ This file contains workspace-specific information for AI conversations.
      - c) `uv run pytest`
    - STEP 2: Verify ALL steps succeed with exit code 0
    - STEP 3: If ANY step fails, fix issues and restart from STEP 1
-   - STEP 4: Only after all checks pass, proceed with `git add`/`commit`/`push`
+   - STEP 4: Restore `.vscode/mcp.json` to original state (revert `_RESTART` counter changes)
+     - Use `git restore .vscode/mcp.json` OR manually revert counter
+     - NEVER commit restart counter changes - testing only
+   - STEP 5: Only after all checks pass and cleanup complete, proceed with `git add`/`commit`/`push`
    - APPLIES TO: All code commits in dbt-core-mcp workspace
    - VIOLATION PENALTY: Immediate acknowledgment and restart with correct procedure
    - NO EXCEPTIONS
@@ -45,6 +48,10 @@ This file contains workspace-specific information for AI conversations.
    - STEP 2: **CRITICAL** - Do NOT invoke MCP tools in the same tool call batch as the mcp.json edit
    - STEP 3: Wait for next user interaction or separate tool invocation
    - STEP 4: Then invoke MCP tools for testing
+   - **PRE-COMMIT CLEANUP**:
+     - BEFORE committing: ALWAYS restore `.vscode/mcp.json` to its original state
+     - Use `git restore .vscode/mcp.json` OR manually revert `_RESTART` counter changes
+     - The restart counter is for LOCAL TESTING ONLY - never commit changes to it
    - REASON: Parallel execution causes tools to run BEFORE file edit completes
    - Server restarts asynchronously in background - do NOT use sleep commands
    - Framework handles restart timing automatically
