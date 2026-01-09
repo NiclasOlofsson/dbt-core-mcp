@@ -69,6 +69,23 @@ This file contains workspace-specific information for AI conversations.
    - APPLIES TO: All git operations in dbt-core-mcp workspace
    - NO EXCEPTIONS
 
+5. **Release Protocol (MANDATORY)**:
+   - **NEVER manually edit version in pyproject.toml**
+   - **NEVER create tags manually with `git tag`**
+   - **ALWAYS use bump-my-version tool for ALL releases**
+   - STEP 1: Ensure all changes committed and pushed (`git status` clean)
+   - STEP 2: Run version bump command:
+     - For bug fixes/docs: `uv run bump-my-version bump patch`
+     - For new features: `uv run bump-my-version bump minor`
+     - For breaking changes: `uv run bump-my-version bump major`
+   - STEP 3: Push with tags: `git push --follow-tags`
+   - STEP 4: GitHub Actions handles: build, test, release, PyPI publish
+   - The tool updates BOTH `version` AND `current_version` in pyproject.toml automatically
+   - Manual version edits will break future releases (current_version mismatch)
+   - VIOLATION PENALTY: Immediate rollback and restart with correct procedure
+   - APPLIES TO: All releases in dbt-core-mcp workspace
+   - NO EXCEPTIONS
+
 ## Policies
 
 ## Personal Context
