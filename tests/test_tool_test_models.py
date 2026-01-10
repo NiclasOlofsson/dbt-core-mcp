@@ -50,7 +50,7 @@ async def test_test_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
 
 @pytest.mark.asyncio
 async def test_test_modified_only_no_state_tests_all(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test select_state_modified without state returns success (cannot determine modifications)."""
+    """Test select_state_modified without state raises RuntimeError."""
     # Remove state if it exists
     assert jaffle_shop_server.project_dir is not None
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
@@ -59,17 +59,14 @@ async def test_test_modified_only_no_state_tests_all(jaffle_shop_server: "DbtCor
 
         shutil.rmtree(state_dir)
 
-    # With no state, select_state_modified should return success with message (not test anything)
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
-
-    assert result["status"] == "success"
-    assert "No previous state" in result["message"]
-    assert result["results"] == []
+    # With no state, select_state_modified should raise RuntimeError
+    with pytest.raises(RuntimeError, match="No previous state found"):
+        await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
 
 
 @pytest.mark.asyncio
 async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test that running tests uses state from previous run."""
+    """Test that running tests with state but no modifications raises RuntimeError."""
     # First run models to create state
     assert jaffle_shop_server.project_dir is not None
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
@@ -79,12 +76,9 @@ async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
     assert run_result["status"] == "success"
     assert state_dir.exists()
 
-    # Now select_state_modified should work (even if nothing modified, should succeed)
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
-
-    # Should succeed even with no modified models
-    assert result["status"] == "success"
-    assert "--state target/state_last_run" in result["command"]
+    # When nothing modified, selector returns no tests - raises RuntimeError
+    with pytest.raises(RuntimeError, match="No tests matched selector"):
+        await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
 
 
 @pytest.mark.asyncio

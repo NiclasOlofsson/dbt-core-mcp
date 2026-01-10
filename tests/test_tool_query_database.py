@@ -53,8 +53,6 @@ async def test_query_database_with_limit_in_sql(jaffle_shop_server: "DbtCoreMcpS
 
 @pytest.mark.asyncio
 async def test_query_database_invalid_sql(jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test query_database with invalid SQL returns error."""
-    result = await jaffle_shop_server.toolImpl_query_database(ctx=None, sql="INVALID SQL STATEMENT")
-
-    assert result["status"] in ["failed", "error"]
-    assert "error" in result or "message" in result
+    """Test query_database with invalid SQL raises RuntimeError."""
+    with pytest.raises(RuntimeError, match="Query execution failed"):
+        await jaffle_shop_server.toolImpl_query_database(ctx=None, sql="INVALID SQL STATEMENT")

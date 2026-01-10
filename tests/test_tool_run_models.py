@@ -60,12 +60,9 @@ async def test_run_models_modified_only_no_state_runs_all(jaffle_shop_server: "D
 
         shutil.rmtree(state_dir)
 
-    # With no state, select_state_modified should return success with message (not run anything)
-    result = await jaffle_shop_server.toolImpl_run_models(ctx=None, select_state_modified=True)
-
-    assert result["status"] == "success"
-    assert "No previous state" in result["message"]
-    assert result["results"] == []
+    # With no state, select_state_modified should raise RuntimeError
+    with pytest.raises(RuntimeError, match="No previous state found"):
+        await jaffle_shop_server.toolImpl_run_models(ctx=None, select_state_modified=True)
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ async def test_build_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer")
 
 @pytest.mark.asyncio
 async def test_build_modified_only_no_state_builds_all(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test select_state_modified without state returns success (cannot determine modifications)."""
+    """Test select_state_modified without state raises RuntimeError."""
     # Remove state if it exists
     assert jaffle_shop_server.project_dir is not None
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
@@ -64,12 +64,9 @@ async def test_build_modified_only_no_state_builds_all(jaffle_shop_server: "DbtC
 
         shutil.rmtree(state_dir)
 
-    # With no state, select_state_modified should return success with message (not build anything)
-    result = await jaffle_shop_server.toolImpl_build_models(ctx=None, select_state_modified=True)
-
-    assert result["status"] == "success"
-    assert "No previous state" in result["message"]
-    assert result["results"] == []
+    # With no state, select_state_modified should raise RuntimeError
+    with pytest.raises(RuntimeError, match="No previous state found"):
+        await jaffle_shop_server.toolImpl_build_models(ctx=None, select_state_modified=True)
 
 
 @pytest.mark.asyncio

@@ -43,15 +43,7 @@ async def test_snapshot_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
 
 @pytest.mark.asyncio
 async def test_snapshot_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test excluding specific snapshots."""
-    result = await jaffle_shop_server.toolImpl_snapshot_models(ctx=None, exclude="customers_snapshot")
-
-    assert result["status"] == "success"
-    assert "--exclude customers_snapshot" in result["command"]
-
-    # Should have no results if only snapshot is excluded
-    results = result["results"]
-    # Jaffle shop only has customers_snapshot, so excluding it means no snapshots run
-    # But dbt snapshot still succeeds with 0 snapshots
-    customer_snapshots = [r for r in results if "customers_snapshot" in r.get("unique_id", "")]
-    assert len(customer_snapshots) == 0
+    """Test excluding all snapshots raises RuntimeError."""
+    # Jaffle shop only has customers_snapshot, so excluding it means no snapshots match
+    with pytest.raises(RuntimeError, match="No snapshots matched selector"):
+        await jaffle_shop_server.toolImpl_snapshot_models(ctx=None, exclude="customers_snapshot")
