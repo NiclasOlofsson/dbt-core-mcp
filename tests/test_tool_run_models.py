@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     """Jaffle shop server with seeds already loaded."""
     # Load seeds first since models depend on them
-    await jaffle_shop_server.toolImpl_seed_data()
+    await jaffle_shop_server.toolImpl_seed_data(ctx=None)
     return jaffle_shop_server
 
 

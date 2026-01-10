@@ -21,6 +21,7 @@ unit_tests:
           - {order_id: 103, customer_id: 1, order_date: '2024-02-01'}
     
     expect:
+      format: dict
       rows:
         - {customer_id: 1, first_name: 'Alice', last_name: 'Smith', first_order_date: '2024-01-01', most_recent_order_date: '2024-02-01', number_of_orders: 3}
         - {customer_id: 2, first_name: 'Bob', last_name: 'Jones', first_order_date: null, most_recent_order_date: null, number_of_orders: 0}
@@ -37,8 +38,10 @@ unit_tests:
         rows: []
     
     expect:
+      format: dict
       rows:
-        - {customer_id: 99, first_name: 'New', last_name: 'Customer', number_of_orders: 0}
+        - {customer_id: 99, first_name: 'New', last_name: 'Customer', first_order_date: null, most_recent_order_date: null, number_of_orders: 0}
+
   - name: test_customer_with_single_order
     description: Verify first and most recent order dates match for single order
     model: customers
@@ -52,5 +55,6 @@ unit_tests:
           - {order_id: 100, customer_id: 50, order_date: '2024-01-15', status: 'completed'}
     
     expect:
+      format: dict
       rows:
         - {customer_id: 50, first_name: 'Emma', last_name: 'Wilson', first_order_date: '2024-01-15', most_recent_order_date: '2024-01-15', number_of_orders: 1}

@@ -1,11 +1,11 @@
 ---
 applyTo: '**'
 description: Workspace-specific AI memory for this project
-lastOptimized: '2025-12-29T12:18:24.604279+00:00'
-entryCount: 1
-optimizationVersion: 8
+lastOptimized: '2026-01-10T00:55:50.024673+00:00'
+entryCount: 5
+optimizationVersion: 9
 autoOptimize: true
-lastOptimizedTokenCount: 710
+lastOptimizedTokenCount: 1289
 tokenGrowthThreshold: 1.2
 ---
 # Workspace AI Memory
@@ -96,4 +96,10 @@ This file contains workspace-specific information for AI conversations.
 
 ## Communication Preferences
 
+## Suggestions/Hints
+
 ## Memories/Facts
+
+### dbt-core-mcp Configuration
+
+- **2026-01-10 01:55:** MCP server logs are located at `$TEMP/dbt_core_mcp_logs/dbt_core_mcp.log` (on Windows: `%TEMP%\dbt_core_mcp_logs\dbt_core_mcp.log`). Configured in `src/dbt_core_mcp/__main__.py` `setup_logging()` function.

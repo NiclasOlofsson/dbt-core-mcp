@@ -123,8 +123,8 @@ class BridgeRunner:
 
         logger.info("Starting persistent dbt process...")
 
-        # Build inline script for persistent dbt loop
-        loop_script = self._build_loop_script()
+        # Build unified script in loop mode
+        loop_script = self._build_unified_script([], loop_mode=True)
 
         # Build command to run loop script
         cmd = [*self.python_command, "-c", loop_script]
@@ -277,6 +277,43 @@ class BridgeRunner:
 
             return DbtRunnerResult(success=success, stdout=stdout, stderr=stderr)
 
+        except asyncio.CancelledError:
+            # User aborted - force kill the persistent process immediately
+            logger.info("Cancellation detected, force killing persistent process")
+            if self._dbt_process and self._dbt_process.returncode is None:
+                pid = self._dbt_process.pid
+                self._dbt_process.kill()
+                logger.info(f"Kill signal sent to PID {pid}, waiting for process to terminate...")
+
+                # Poll process status and log updates while waiting
+                # Use shield to prevent cancellation from interrupting cleanup
+                start_time = asyncio.get_event_loop().time()
+                poll_interval = 1.0  # Check every second
+                timeout = 30.0  # Give up after 30 seconds
+
+                logger.info(f"Entering wait loop for PID {pid}")
+
+                async def wait_for_termination():
+                    while True:
+                        try:
+                            logger.info(f"Attempting to wait for process {pid} (timeout={poll_interval}s)...")
+                            # Check if process has terminated
+                            if self._dbt_process is not None:
+                                await asyncio.wait_for(self._dbt_process.wait(), timeout=poll_interval)
+                                logger.info(f"wait_for completed successfully for PID {pid}")
+                                logger.info(f"Persistent process terminated (PID {pid}, exit code: {self._dbt_process.returncode})")
+                            break
+                        except asyncio.TimeoutError:
+                            # Still waiting - log status update
+                            elapsed = asyncio.get_event_loop().time() - start_time
+                            if elapsed > timeout:
+                                logger.warning(f"Process {pid} did not terminate after {timeout}s, giving up wait")
+                                break
+                            logger.info(f"Still waiting for PID {pid} to terminate... ({elapsed:.1f}s elapsed)")
+
+                await asyncio.shield(wait_for_termination())
+            self._dbt_process = None
+            raise
         except asyncio.TimeoutError:
             logger.error("Timeout waiting for response from persistent process")
             # Kill and restart process on timeout
@@ -413,8 +450,8 @@ class BridgeRunner:
         # Fall back to one-off subprocess
         logger.info("Using one-off subprocess (persistent mode disabled)")
 
-        # Build inline Python script to execute dbtRunner
-        script = self._build_script(args)
+        # Build unified Python script in one-off mode
+        script = self._build_unified_script(args, loop_mode=False)
 
         # Execute in user's environment
         full_command = [*self.python_command, "-c", script]
@@ -514,13 +551,7 @@ class BridgeRunner:
                 if not error_msg and stdout:
                     error_msg = stdout.strip()
 
-                return DbtRunnerResult(
-                    success=False,
-                    exception=RuntimeError(f"dbt command failed (exit code {returncode}): {error_msg[:500]}"),
-                    stdout=stdout,
-                    stderr=stderr,
-                )
-
+                return DbtRunnerResult(success=False, exception=RuntimeError(error_msg or f"dbt command failed with code {returncode}"), stdout=stdout, stderr=stderr)
         except asyncio.CancelledError:
             # Kill the subprocess when cancelled
             if proc and proc.returncode is None:
@@ -841,6 +872,32 @@ class BridgeRunner:
                 pass
             raise
         finally:
+            # Send final progress update if we have completed resources
+            if progress_callback and overall_progress > 0:
+                try:
+                    # Build final status message
+                    status_parts = []
+                    if ok_count > 0:
+                        status_parts.append(f"✅ {ok_count}")
+                    if error_count > 0:
+                        status_parts.append(f"❌ {error_count}")
+                    if warn_count > 0:
+                        status_parts.append(f"⚠️ {warn_count}")
+                    if skip_count > 0:
+                        status_parts.append(f"⏭️ {skip_count}")
+
+                    if status_parts:
+                        final_message = f"{overall_progress}/{total_resources} completed ({', '.join(status_parts)})"
+                    else:
+                        final_message = f"{overall_progress}/{total_resources} completed"
+
+                    logger.info(f"FINAL PROGRESS: ({overall_progress}/{total_resources}) {final_message}")
+                    result = progress_callback(overall_progress, total_resources, final_message)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.warning(f"Final progress callback error: {e}")
+
             # For one-off subprocesses, ensure process completes
             # For persistent processes, DON'T wait (process stays alive)
             # We can detect persistent by checking if we have _dbt_process
@@ -1088,65 +1145,29 @@ class BridgeRunner:
 
         return command not in no_db_commands
 
-    def _build_script(self, args: list[str]) -> str:
+    def _build_unified_script(self, args: list[str], loop_mode: bool = False) -> str:
         """
-        Build inline Python script to execute dbtRunner.
+        Build unified Python script that can run in one-off or persistent loop mode.
 
         Args:
-            args: dbt command arguments
+            args: dbt command arguments (ignored in loop mode)
+            loop_mode: If True, run persistent loop. If False, execute once and exit.
 
         Returns:
             Python script as string
         """
-        # Add --profiles-dir to args if not already present
-        if "--profiles-dir" not in args:
+        # Add --profiles-dir to args if not already present (for one-off mode)
+        if not loop_mode and "--profiles-dir" not in args:
             args = [*args, "--profiles-dir", str(self.profiles_dir)]
 
         # Add --log-format text to get human-readable output for progress parsing
-        if "--log-format" not in args:
+        if not loop_mode and "--log-format" not in args:
             args = [*args, "--log-format", "text"]
 
-        # Convert args to JSON-safe format
-        args_json = json.dumps(args)
+        # Convert args to JSON-safe format for one-off mode
+        args_json = json.dumps(args) if not loop_mode else "[]"
 
         script = f"""
-import sys
-import json
-import os
-
-# Enable text output for progress tracking
-os.environ['DBT_USE_COLORS'] = '0'
-os.environ['DBT_PRINTER_WIDTH'] = '80'
-
-try:
-    from dbt.cli.main import dbtRunner
-    
-    # Execute dbtRunner with arguments
-    dbt = dbtRunner()
-    result = dbt.invoke({args_json})
-    
-    # Return success status on last line (JSON)
-    output = {{"success": result.success}}
-    print(json.dumps(output))
-    sys.exit(0 if result.success else 1)
-    
-except Exception as e:
-    # Ensure we always exit, even on error
-    error_output = {{"success": False, "error": str(e)}}
-    print(json.dumps(error_output))
-    sys.exit(1)
-"""
-        return script
-
-    def _build_loop_script(self) -> str:
-        """
-        Build inline Python script for persistent dbt loop.
-
-        Returns:
-            Python script as string
-        """
-        # Use placeholder replacement to avoid f-string escaping issues
-        script = """
 import json
 import sys
 import os
@@ -1156,73 +1177,97 @@ sys.stdin.reconfigure(line_buffering=True)
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
+# Set environment for text output
+os.environ['DBT_USE_COLORS'] = '0'
+os.environ['DBT_PRINTER_WIDTH'] = '80'
+
+# Import dbtRunner
 try:
     from dbt.cli.main import dbtRunner
 except ImportError as e:
-    error_msg = {"type": "error", "error": f"Failed to import dbtRunner: {e}"}
+    error_msg = {{"success": False, "error": f"Failed to import dbtRunner: {{e}}"}}
     print(json.dumps(error_msg), flush=True)
     sys.exit(1)
 
 # Initialize dbtRunner once
 dbt = dbtRunner()
 
-# Set environment for text output
-os.environ['DBT_USE_COLORS'] = '0'
-os.environ['DBT_PRINTER_WIDTH'] = '80'
+# Check mode: loop vs one-off
+loop_mode = {str(loop_mode)}
 
-# Signal ready
-ready_msg = {"type": "ready"}
-print(json.dumps(ready_msg), flush=True)
+if loop_mode:
+    # === PERSISTENT LOOP MODE ===
+    
+    # Signal ready
+    ready_msg = {{"type": "ready"}}
+    print(json.dumps(ready_msg), flush=True)
 
-# Process commands in a loop
-while True:
-    try:
-        # Read command from stdin (blocking)
-        line = sys.stdin.readline()
-        if not line:
-            # EOF - client disconnected
-            break
-
-        request = json.loads(line.strip())
-
-        # Check for shutdown command
-        if request.get("shutdown"):
-            break
-
-        # Extract command details
-        command_args = request.get("command", [])
-        
-        # Add profiles_dir if not already present
-        if "--profiles-dir" not in command_args:
-            command_args = [*command_args, "--profiles-dir", "PROFILES_DIR_PLACEHOLDER"]
-
-        # Add text log format for consistent output
-        if "--log-format" not in command_args:
-            command_args = [*command_args, "--log-format", "text"]
-
-        # Execute command - output goes to stdout naturally
+    # Process commands in a loop
+    while True:
         try:
-            print(f"[DBT-BRIDGE] Running command: {command_args[0] if command_args else 'unknown'}", file=sys.stderr, flush=True)
-            result = dbt.invoke(command_args)
-            success = result.success
+            # Read command from stdin (blocking)
+            line = sys.stdin.readline()
+            if not line:
+                # EOF - client disconnected
+                break
+
+            request = json.loads(line.strip())
+
+            # Check for shutdown command
+            if request.get("shutdown"):
+                break
+
+            # Extract command details
+            command_args = request.get("command", [])
+            
+            # Add profiles_dir if not already present
+            if "--profiles-dir" not in command_args:
+                command_args = [*command_args, "--profiles-dir", {repr(str(self.profiles_dir))}]
+
+            # Add text log format for consistent output
+            if "--log-format" not in command_args:
+                command_args = [*command_args, "--log-format", "text"]
+
+            # Execute command - output goes to stdout naturally
+            try:
+                print(f"[DBT-BRIDGE] Running command: {{command_args[0] if command_args else 'unknown'}}", file=sys.stderr, flush=True)
+                result = dbt.invoke(command_args)
+                success = result.success
+            except Exception as e:
+                success = False
+                print(f"Error executing dbt command: {{e}}", file=sys.stderr, flush=True)
+
+            # Ensure all dbt output is flushed before sending completion marker
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+            # Send completion marker as JSON on last line
+            completion = {{"success": success}}
+            print(json.dumps(completion), flush=True)
+
+        except json.JSONDecodeError as e:
+            error_response = {{"type": "error", "error": f"Invalid JSON: {{e}}"}}
+            print(json.dumps(error_response), flush=True)
         except Exception as e:
-            success = False
-            print(f"Error executing dbt command: {e}", file=sys.stderr, flush=True)
+            error_response = {{"type": "error", "error": f"Unexpected error: {{e}}"}}
+            print(json.dumps(error_response), flush=True)
 
-        # Ensure all dbt output is flushed before sending completion marker
-        sys.stdout.flush()
-        sys.stderr.flush()
-
-        # Send completion marker as JSON on last line
-        completion = {"success": success}
-        print(json.dumps(completion), flush=True)
-
-    except json.JSONDecodeError as e:
-        error_response = {"type": "error", "error": f"Invalid JSON: {e}"}
-        print(json.dumps(error_response), flush=True)
+else:
+    # === ONE-OFF EXECUTION MODE ===
+    
+    try:
+        # Execute dbtRunner with arguments
+        result = dbt.invoke({args_json})
+        
+        # Return success status on last line (JSON)
+        output = {{"success": result.success}}
+        print(json.dumps(output))
+        sys.exit(0 if result.success else 1)
+        
     except Exception as e:
-        error_response = {"type": "error", "error": f"Unexpected error: {e}"}
-        print(json.dumps(error_response), flush=True)
+        # Ensure we always exit, even on error
+        error_output = {{"success": False, "error": str(e)}}
+        print(json.dumps(error_output))
+        sys.exit(1)
 """
-        # Replace placeholder with actual profiles_dir (use repr to escape backslashes on Windows)
-        return script.replace('"PROFILES_DIR_PLACEHOLDER"', repr(str(self.profiles_dir)))
+        return script

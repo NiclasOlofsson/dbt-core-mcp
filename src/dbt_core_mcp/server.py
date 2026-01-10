@@ -90,6 +90,8 @@ class DbtCoreMcpServer:
 
         # Initialize dbt components (lazy-loaded)
         self.runner: BridgeRunner | None = None
+        # For testing: force fresh BridgeRunner every call to test complete isolation
+        self.force_fresh_runner = False  # Set to False to reuse runners for performance
         self.manifest: ManifestLoader | None = None
         self.adapter_type: str | None = None
 
@@ -185,91 +187,78 @@ class DbtCoreMcpServer:
             logger.warning(f"Failed to parse dbt_project.yml: {e}")
             return {}
 
-    def _is_manifest_stale(self) -> bool:
-        """Check if manifest needs regeneration by comparing timestamps.
+    async def _get_runner(self) -> BridgeRunner:
+        """Get BridgeRunner instance with explicit control over creation.
+
+        Uses self.force_fresh_runner to determine behavior:
+        - If True, always create a fresh BridgeRunner instance
+        - If False, reuse existing runner if available
 
         Returns:
-            True if manifest is missing or older than any source files
+            BridgeRunner instance
         """
-        if not self.project_dir:
-            return True
+        if self.force_fresh_runner or not self.runner:
+            if not self.project_dir:
+                raise RuntimeError("Project directory not set")
 
+            # Detect Python command for user's environment
+            python_cmd = detect_python_command(self.project_dir)
+            logger.info(f"Creating {'fresh' if self.force_fresh_runner else 'new'} BridgeRunner with command: {python_cmd}")
+
+            # Create bridge runner - use_persistent_process=False for testing isolation
+            self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout, use_persistent_process=False)
+
+        return self.runner
+
+    def _manifest_exists(self) -> bool:
+        """
+        Check if manifest.json exists.
+
+        Simple check - tools will handle their own parsing as needed.
+        """
+        if self.project_dir is None:
+            return False
         manifest_path = self.project_dir / "target" / "manifest.json"
-        if not manifest_path.exists():
-            logger.debug("Manifest does not exist")
-            return True
+        return manifest_path.exists()
 
-        manifest_mtime = manifest_path.stat().st_mtime
-
-        # Check dbt_project.yml
-        project_file = self.project_dir / "dbt_project.yml"
-        if project_file.exists() and project_file.stat().st_mtime > manifest_mtime:
-            logger.debug("dbt_project.yml is newer than manifest")
-            return True
-
-        # Get configured paths from project
-        project_paths = self._get_project_paths()
-
-        # Check all configured source directories
-        for path_type, paths in project_paths.items():
-            for path_str in paths:
-                source_dir = self.project_dir / path_str
-                if source_dir.exists():
-                    # Check .sql files
-                    for sql_file in source_dir.rglob("*.sql"):
-                        if sql_file.stat().st_mtime > manifest_mtime:
-                            logger.debug(f"{path_type}: {sql_file.name} is newer than manifest")
-                            return True
-                    # Check .yml and .yaml files
-                    for yml_file in source_dir.rglob("*.yml"):
-                        if yml_file.stat().st_mtime > manifest_mtime:
-                            logger.debug(f"{path_type}: {yml_file.name} is newer than manifest")
-                            return True
-                    for yaml_file in source_dir.rglob("*.yaml"):
-                        if yaml_file.stat().st_mtime > manifest_mtime:
-                            logger.debug(f"{path_type}: {yaml_file.name} is newer than manifest")
-                            return True
-
-        return False
-
-    async def _initialize_dbt_components(self, needs_parse: bool = True) -> None:
+    async def _initialize_dbt_components(self, needs_parse: bool = True, force_parse: bool = False) -> None:
         """Initialize dbt runner and manifest loader.
 
         Args:
             needs_parse: Whether to run dbt parse. If False, assumes manifest already exists and is fresh.
+            force_parse: If True, force parsing even if manifest exists (for tools needing fresh data).
         """
 
         if not self.project_dir:
             raise RuntimeError("Project directory not set")
 
-        # Only initialize runner once
-        if not self.runner:
-            # Detect Python command for user's environment
-            python_cmd = detect_python_command(self.project_dir)
-            logger.info(f"Detected Python command: {python_cmd}")
+        # Get runner (fresh or reused based on self.force_fresh_runner)
+        runner = await self._get_runner()
 
-            # Create bridge runner
-            self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout)
-
-        # Only parse if needed (manifest is stale or missing)
-        if needs_parse:
-            logger.info("Running dbt parse to generate manifest...")
-            result = await self.runner.invoke(["parse"])
+        # Parse if manifest missing OR force requested
+        should_parse = needs_parse or force_parse
+        if should_parse:
+            if not self._manifest_exists():
+                logger.info("No manifest found - running initial dbt parse...")
+            else:
+                logger.info("Force parse requested - running dbt parse for fresh data...")
+            parse_args = ["parse"]  # Use partial parse for efficiency
+            result = await runner.invoke(parse_args)
             if not result.success:
                 error_msg = str(result.exception) if result.exception else "Unknown error"
                 raise RuntimeError(f"Failed to parse dbt project: {error_msg}")
         else:
-            logger.info("Skipping dbt parse - manifest is fresh")
+            logger.info("Manifest exists and no force parse - tools will handle parsing as needed")
 
         # Initialize or reload manifest loader
-        manifest_path = self.runner.get_manifest_path()
+        manifest_path = runner.get_manifest_path()
         if not self.manifest:
             self.manifest = ManifestLoader(manifest_path)
         await self.manifest.load()
 
         logger.info("dbt components initialized successfully")
 
-    async def _ensure_initialized_with_context(self, ctx: Any) -> None:
+    async def _ensure_initialized_with_context(self, ctx: Any, force_parse: bool = False) -> None:
         """Ensure dbt components are initialized, with optional workspace root detection.
 
         Uses async lock to prevent concurrent initialization races when multiple tools
@@ -277,6 +266,7 @@ class DbtCoreMcpServer:
 
         Args:
             ctx: FastMCP Context for accessing workspace roots
+            force_parse: If True, force parsing even if manifest exists (for tools needing fresh data)
         """
         async with self._init_lock:
             # Always check for workspace changes, even if previously initialized
@@ -303,18 +293,7 @@ class DbtCoreMcpServer:
             if not self.project_dir:
                 raise RuntimeError("dbt project directory not set. The MCP server requires a workspace with a dbt_project.yml file.")
 
-            # Check if manifest is stale (time delta check)
-            needs_parse = self._is_manifest_stale()
-
-            # Initialize components if needed (first time or after workspace change)
-            # Parse only if manifest is stale
-            if not self.runner or not self.manifest or needs_parse:
-                await self._initialize_dbt_components(needs_parse=needs_parse)
-            else:
-                # Components exist and manifest is fresh, but ensure manifest data is loaded
-                # (in case this is a new process instance with existing ManifestLoader object)
-                if not self.manifest.is_loaded():
-                    await self.manifest.load()
+            await self._initialize_dbt_components(needs_parse=not self._manifest_exists(), force_parse=force_parse)
 
     def _parse_run_results(self) -> dict[str, Any]:
         """Parse target/run_results.json after dbt run/test/build.
@@ -353,6 +332,51 @@ class DbtCoreMcpServer:
         except Exception as e:
             logger.warning(f"Failed to parse run_results.json: {e}")
             return {"results": [], "elapsed_time": 0}
+
+    async def _report_final_progress(
+        self,
+        ctx: Context | None,
+        results_list: list[dict[str, Any]],
+        command_name: str,
+        resource_type: str,
+    ) -> None:
+        """Report final progress with status breakdown.
+
+        Args:
+            ctx: MCP context for progress reporting
+            results_list: List of result dictionaries from dbt execution
+            command_name: Command prefix for message (e.g., "Run", "Test", "Build")
+            resource_type: Resource type for message (e.g., "models", "tests", "resources")
+        """
+        if not ctx:
+            return
+
+        if not results_list:
+            await ctx.report_progress(progress=0, total=0, message=f"0 {resource_type} matched selector")
+            return
+
+        # Count statuses - different commands use different status values
+        total = len(results_list)
+        passed_count = sum(1 for r in results_list if r.get("status") in ("success", "pass"))
+        failed_count = sum(1 for r in results_list if r.get("status") in ("error", "fail"))
+        skip_count = sum(1 for r in results_list if r.get("status") in ("skipped", "skip"))
+        warn_count = sum(1 for r in results_list if r.get("status") == "warn")
+
+        # Build status parts
+        parts = []
+        if passed_count > 0:
+            # Use "All passed" only if no other statuses present
+            has_other_statuses = failed_count > 0 or warn_count > 0 or skip_count > 0
+            parts.append(f"✅ {passed_count} passed" if has_other_statuses else "✅ All passed")
+        if failed_count > 0:
+            parts.append(f"❌ {failed_count} failed")
+        if warn_count > 0:
+            parts.append(f"⚠️ {warn_count} warned")
+        if skip_count > 0:
+            parts.append(f"⏭️ {skip_count} skipped")
+
+        summary = f"{command_name}: {total}/{total} {resource_type} completed ({', '.join(parts)})"
+        await ctx.report_progress(progress=total, total=total, message=summary)
 
     def _compare_model_schemas(self, model_unique_ids: list[str], state_manifest_path: Path) -> dict[str, Any]:
         """Compare schemas of models before and after run.
@@ -443,7 +467,8 @@ class DbtCoreMcpServer:
                 sql = f"DESCRIBE {{{{ source('{source_name}', '{model_name}') }}}}"
             else:
                 sql = f"DESCRIBE {{{{ ref('{model_name}') }}}}"
-            result = await self.runner.invoke_query(sql)  # type: ignore
+            runner = await self._get_runner()
+            result = await runner.invoke_query(sql)  # type: ignore
 
             if not result.success or not result.stdout:
                 return []
@@ -572,7 +597,8 @@ class DbtCoreMcpServer:
                 # If compiled SQL requested but not available, trigger compilation
                 if result.get("compiled_sql") is None and not result.get("compiled_sql_cached"):
                     logger.info(f"Compiling model: {name}")
-                    compile_result = await self.runner.invoke_compile(name, force=False)  # type: ignore
+                    runner = await self._get_runner()
+                    compile_result = await runner.invoke_compile(name, force=False)  # type: ignore
 
                     if compile_result.success:
                         # Reload manifest to get compiled code
@@ -634,7 +660,8 @@ class DbtCoreMcpServer:
 
         # Run full dbt debug if requested (default behavior)
         if run_debug:
-            debug_result_obj = await self.runner.invoke(["debug"])  # type: ignore
+            runner = await self._get_runner()
+            debug_result_obj = await runner.invoke(["debug"])  # type: ignore
 
             # Convert DbtRunnerResult to dictionary
             debug_result = {
@@ -671,20 +698,17 @@ class DbtCoreMcpServer:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
         # Execute query using dbt show with --no-populate-cache for optimal performance
-        result = await self.runner.invoke_query(sql, progress_callback=progress_callback if ctx else None)  # type: ignore
+        runner = await self._get_runner()
+        result = await runner.invoke_query(sql, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         if not result.success:
             error_msg = str(result.exception) if result.exception else "Unknown error"
-            response = {
-                "status": "failed",
-                "error": error_msg,
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+            # Include dbt output in error message for context
+            full_error = error_msg
+            if result.stdout and "Database Error" in result.stdout:
+                # Extract the helpful database error details
+                full_error = result.stdout
+            raise RuntimeError(f"Query execution failed: {full_error}")
 
         # Parse JSON output from dbt show
         import json
@@ -822,12 +846,7 @@ class DbtCoreMcpServer:
 
         # Early return if state-based requested but no state exists
         if select_state_modified and not selector:
-            return {
-                "status": "success",
-                "message": "No previous state found - cannot determine modifications",
-                "results": [],
-                "elapsed_time": 0,
-            }
+            raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt run' or 'dbt build' first to create baseline state.")
 
         # Build command args
         args = ["run"]
@@ -872,7 +891,8 @@ class DbtCoreMcpServer:
 
             # Get list of models
             logger.info(f"Getting model list: {list_args}")
-            list_result = await self.runner.invoke(list_args)  # type: ignore
+            runner = await self._get_runner()
+            list_result = await runner.invoke(list_args)  # type: ignore
 
             if list_result.success and list_result.stdout:
                 model_count = 0
@@ -915,24 +935,34 @@ class DbtCoreMcpServer:
             if ctx:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
-        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None, expected_total=expected_total)  # type: ignore
+        # Delete stale run_results.json to ensure we only read fresh results
+        if self.project_dir:
+            run_results_path = self.project_dir / "target" / "run_results.json"
+            if run_results_path.exists():
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
 
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Run failed"
-            response = {
-                "status": "error",
-                "message": error_msg,
-                "command": " ".join(args),
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+        runner = await self._get_runner()
+        result = await runner.invoke(args, progress_callback=progress_callback if ctx else None, expected_total=expected_total)  # type: ignore
 
-        # Parse run_results.json for details
+        # Parse run_results.json to discriminate system errors from business outcomes
         run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution (parse error, connection failure, etc.)
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "dbt run execution failed"
+                # Extract specific error from stdout if available
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                raise RuntimeError(f"dbt run failed to execute: {error_msg}")
+
+        # Business outcome - dbt executed models (some may have failed)
+        # Continue with existing run_results parsing
 
         # Check for schema changes if requested
         schema_changes: dict[str, dict[str, list[str]]] = {}
@@ -962,8 +992,17 @@ class DbtCoreMcpServer:
         if result.success and self.project_dir:
             state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = self.runner.get_manifest_path()  # type: ignore
+            runner = await self._get_runner()
+            manifest_path = runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
+
+        # Send final progress update with run summary
+        results_list = run_results.get("results", [])
+        await self._report_final_progress(ctx, results_list, "Run", "models")
+
+        # Empty results means selector matched nothing - this is an error
+        if not results_list:
+            raise RuntimeError(f"No models matched selector: {select or selector or 'all'}")
 
         response: dict[str, Any] = {
             "status": "success",
@@ -993,12 +1032,7 @@ class DbtCoreMcpServer:
 
         # Early return if state-based requested but no state exists
         if select_state_modified and not selector:
-            return {
-                "status": "success",
-                "message": "No previous state found - cannot determine modifications",
-                "results": [],
-                "elapsed_time": 0,
-            }
+            raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt run' or 'dbt build' first to create baseline state.")
 
         # Build command args
         args = ["test"]
@@ -1023,29 +1057,47 @@ class DbtCoreMcpServer:
             if ctx:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
-        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
+        # Delete stale run_results.json to ensure we only read fresh results
+        if self.project_dir:
+            run_results_path = self.project_dir / "target" / "run_results.json"
+            if run_results_path.exists():
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
 
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Tests failed"
-            response = {
-                "status": "error",
-                "message": error_msg,
-                "command": " ".join(args),
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+        runner = await self._get_runner()
+        result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
-        # Parse run_results.json for details
+        # Parse run_results.json to discriminate system errors from business outcomes
         run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution (parse error, connection failure, etc.)
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "dbt test execution failed"
+                # Extract specific error from stdout if available
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                raise RuntimeError(f"dbt test failed to execute: {error_msg}")
+
+        # Business outcome - dbt executed tests (some may have failed)
+        # Continue with existing run_results parsing
+        results_list = run_results.get("results", [])
+
+        # Send final progress update with test summary
+        await self._report_final_progress(ctx, results_list, "Test", "tests")
+
+        # Empty results means selector matched nothing - this is an error
+        if not results_list:
+            raise RuntimeError(f"No tests matched selector: {select or selector or 'all'}")
 
         return {
             "status": "success",
             "command": " ".join(args),
-            "results": run_results.get("results", []),
+            "results": results_list,
             "elapsed_time": run_results.get("elapsed_time"),
         }
 
@@ -1066,12 +1118,7 @@ class DbtCoreMcpServer:
 
         # Early return if state-based requested but no state exists
         if select_state_modified and not selector:
-            return {
-                "status": "success",
-                "message": "No previous state found - cannot determine modifications",
-                "results": [],
-                "elapsed_time": 0,
-            }
+            raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt build' first to create baseline state.")
 
         # Build command args
         args = ["build"]
@@ -1104,31 +1151,65 @@ class DbtCoreMcpServer:
             if ctx:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
-        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
+        # Delete stale run_results.json to ensure we only read fresh results
+        if self.project_dir:
+            run_results_path = self.project_dir / "target" / "run_results.json"
+            if run_results_path.exists():
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
 
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Build failed"
-            response = {
-                "status": "error",
-                "message": error_msg,
-                "command": " ".join(args),
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+        runner = await self._get_runner()
+        result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
+        # Parse run_results.json to discriminate system errors from business outcomes
+        run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution
+            if result and not result.success:
+                error_msg = str(result.exception) if result.exception else "dbt build execution failed"
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                raise RuntimeError(f"dbt build failed to execute: {error_msg}")
+
+        # Business outcome - dbt executed successfully
         # Save state on success for next modified run
-        if result.success and self.project_dir:
+        if result and result.success and self.project_dir:
             state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = self.runner.get_manifest_path()  # type: ignore
+            runner = await self._get_runner()
+            manifest_path = runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
 
-        # Parse run_results.json for details
-        run_results = self._parse_run_results()
+        # Send final progress update with build summary
+        results_list = run_results.get("results", [])
+        if ctx:
+            if results_list:
+                passed_count = sum(1 for r in results_list if r.get("status") in ("success", "pass"))
+                failed_count = sum(1 for r in results_list if r.get("status") in ("error", "fail"))
+                skip_count = sum(1 for r in results_list if r.get("status") == "skipped")
+
+                total = len(results_list)
+                parts = []
+                if passed_count > 0:
+                    parts.append(f"✅ {passed_count} passed" if failed_count > 0 or skip_count > 0 else "✅ All passed")
+                if failed_count > 0:
+                    parts.append(f"❌ {failed_count} failed")
+                if skip_count > 0:
+                    parts.append(f"⏭️ {skip_count} skipped")
+
+                summary = f"Build: {total}/{total} resources completed ({', '.join(parts)})"
+                await ctx.report_progress(progress=total, total=total, message=summary)
+            else:
+                await ctx.report_progress(progress=0, total=0, message="0 resources matched selector")
+
+        # Empty results means selector matched nothing - this is an error
+        if not results_list:
+            raise RuntimeError(f"No resources matched selector: {select or selector or 'all'}")
 
         return {
             "status": "success",
@@ -1139,7 +1220,7 @@ class DbtCoreMcpServer:
 
     async def toolImpl_seed_data(
         self,
-        ctx: Context | None = None,
+        ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
         select_state_modified: bool = False,
@@ -1153,12 +1234,7 @@ class DbtCoreMcpServer:
 
         # Early return if state-based requested but no state exists
         if select_state_modified and not selector:
-            return {
-                "status": "success",
-                "message": "No previous state found - cannot determine modifications",
-                "results": [],
-                "elapsed_time": 0,
-            }
+            raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt seed' first to create baseline state.")
 
         # Build command args
         args = ["seed"]
@@ -1186,31 +1262,65 @@ class DbtCoreMcpServer:
             if ctx:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
-        result = await self.runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
+        # Delete stale run_results.json to ensure we only read fresh results
+        if self.project_dir:
+            run_results_path = self.project_dir / "target" / "run_results.json"
+            if run_results_path.exists():
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
 
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Seed failed"
-            response = {
-                "status": "error",
-                "message": error_msg,
-                "command": " ".join(args),
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+        runner = await self._get_runner()
+        result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
+        # Parse run_results.json to discriminate system errors from business outcomes
+        run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "dbt seed execution failed"
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                raise RuntimeError(f"dbt seed failed to execute: {error_msg}")
+
+        # Business outcome - dbt executed successfully
         # Save state on success for next modified run
         if result.success and self.project_dir:
             state_dir = self.project_dir / "target" / "state_last_run"
             state_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = self.runner.get_manifest_path()  # type: ignore
+            runner = await self._get_runner()
+            manifest_path = runner.get_manifest_path()  # type: ignore
             shutil.copy(manifest_path, state_dir / "manifest.json")
 
         # Parse run_results.json for details
         run_results = self._parse_run_results()
+
+        # Send tool-specific final progress
+        if ctx:
+            if run_results.get("results"):
+                results_list = run_results["results"]
+                total = len(results_list)
+                passed_count = sum(1 for r in results_list if r.get("status") == "success")
+                failed_count = sum(1 for r in results_list if r.get("status") in ("error", "fail"))
+
+                parts = []
+                if passed_count > 0:
+                    parts.append(f"✅ {passed_count} passed" if failed_count > 0 else "✅ All passed")
+                if failed_count > 0:
+                    parts.append(f"❌ {failed_count} failed")
+
+                summary = f"Seed: {total}/{total} seeds completed ({', '.join(parts)})"
+                await ctx.report_progress(progress=total, total=total, message=summary)
+            else:
+                await ctx.report_progress(progress=0, total=0, message="0 seeds matched selector")
+
+        # Empty results means selector matched nothing - this is an error
+        if not run_results.get("results"):
+            raise RuntimeError(f"No seeds matched selector: {select or selector or 'all'}")
 
         return {
             "status": "success",
@@ -1221,6 +1331,7 @@ class DbtCoreMcpServer:
 
     async def toolImpl_snapshot_models(
         self,
+        ctx: Context | None,
         select: str | None = None,
         exclude: str | None = None,
     ) -> dict[str, Any]:
@@ -1236,24 +1347,54 @@ class DbtCoreMcpServer:
 
         # Execute
         logger.info(f"Running DBT snapshot with args: {args}")
-        result = await self.runner.invoke(args)  # type: ignore
 
-        if not result.success:
-            error_msg = str(result.exception) if result.exception else "Snapshot failed"
-            response = {
-                "status": "error",
-                "message": error_msg,
-                "command": " ".join(args),
-            }
-            # Include dbt output for debugging
-            if result.stdout:
-                response["dbt_output"] = result.stdout
-            if result.stderr:
-                response["stderr"] = result.stderr
-            return response
+        # Delete stale run_results.json to ensure we only read fresh results
+        if self.project_dir:
+            run_results_path = self.project_dir / "target" / "run_results.json"
+            if run_results_path.exists():
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
 
-        # Parse run_results.json for details
+        runner = await self._get_runner()
+        result = await runner.invoke(args)  # type: ignore
+
+        # Parse run_results.json to discriminate system errors from business outcomes
         run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution
+            if not result.success:
+                error_msg = str(result.exception) if result.exception else "dbt snapshot execution failed"
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                raise RuntimeError(f"dbt snapshot failed to execute: {error_msg}")
+
+        # Send tool-specific final progress
+        if ctx:
+            if run_results.get("results"):
+                results_list = run_results["results"]
+                total = len(results_list)
+                passed_count = sum(1 for r in results_list if r.get("status") == "success")
+                failed_count = sum(1 for r in results_list if r.get("status") in ("error", "fail"))
+
+                parts = []
+                if passed_count > 0:
+                    parts.append(f"✅ {passed_count} passed" if failed_count > 0 else "✅ All passed")
+                if failed_count > 0:
+                    parts.append(f"❌ {failed_count} failed")
+
+                summary = f"Snapshot: {total}/{total} snapshots completed ({', '.join(parts)})"
+                await ctx.report_progress(progress=total, total=total, message=summary)
+            else:
+                await ctx.report_progress(progress=0, total=0, message="0 snapshots matched selector")
+
+        # Empty results means selector matched nothing - this is an error
+        if not run_results.get("results"):
+            raise RuntimeError(f"No snapshots matched selector: {select or 'all'}")
 
         return {
             "status": "success",
@@ -1266,22 +1407,16 @@ class DbtCoreMcpServer:
         """Implementation of install_deps tool."""
         # Execute dbt deps
         logger.info("Running dbt deps to install packages")
-        result = await self.runner.invoke(["deps"])  # type: ignore
+
+        runner = await self._get_runner()
+        result = await runner.invoke(["deps"])
 
         if not result.success:
-            error_msg = str(result.exception) if result.exception else "deps failed"
-            return {
-                "status": "error",
-                "message": error_msg,
-                "command": "dbt deps",
-            }
+            raise RuntimeError(f"dbt deps failed: {result.exception}")
 
-        # Reload manifest to pick up newly installed packages
-        logger.info("Reloading manifest to include new packages")
-        await self.manifest.load()  # type: ignore
+        # Parse installed packages from manifest
+        installed_packages: set[str] = set()
 
-        # Get list of installed packages by checking for package macros
-        installed_packages = set()
         assert self.manifest is not None
         manifest_dict = self.manifest.get_manifest_dict()
         macros = manifest_dict.get("macros", {})
@@ -1366,7 +1501,7 @@ class DbtCoreMcpServer:
                 list_resources("test") -> only tests
                 list_resources("macro") -> all macros (discover installed packages)
             """
-            await self._ensure_initialized_with_context(ctx)
+            await self._ensure_initialized_with_context(ctx, force_parse=True)
             return await self.toolImpl_list_resources(resource_type=resource_type)
 
         @self.app.tool()
@@ -1412,7 +1547,7 @@ class DbtCoreMcpServer:
                 get_resource_info("test_unique_customers") -> find test
                 get_resource_info("customers", include_compiled_sql=True) -> include compiled SQL
             """
-            await self._ensure_initialized_with_context(ctx)
+            await self._ensure_initialized_with_context(ctx, force_parse=True)
             return await self.toolImpl_get_resource_info(name, resource_type, include_database_schema, include_compiled_sql)
 
         @self.app.tool()
@@ -1460,7 +1595,7 @@ class DbtCoreMcpServer:
                 get_lineage("customers", "model", "upstream") -> where customers model gets data
                 get_lineage("jaffle_shop.orders", "source", "downstream", 2) -> 2 levels of dependents
             """
-            await self._ensure_initialized_with_context(ctx)
+            await self._ensure_initialized_with_context(ctx, force_parse=True)
             return await self.toolImpl_get_lineage(name, resource_type, direction, depth)
 
         @self.app.tool()
@@ -1505,53 +1640,40 @@ class DbtCoreMcpServer:
                 analyze_impact("jaffle_shop.orders", "source") -> impact of source change
                 analyze_impact("raw_customers", "seed") -> impact of seed data change
             """
-            await self._ensure_initialized_with_context(ctx)
+            await self._ensure_initialized_with_context(ctx, force_parse=True)
             return await self.toolImpl_analyze_impact(name, resource_type)
 
         @self.app.tool()
-        async def query_database(ctx: Context, sql: str, output_file: str | None = None, output_format: str = "json") -> dict[str, Any]:
+        async def query_database(
+            ctx: Context | None,
+            sql: str,
+            output_file: str | None = None,
+            output_format: str = "json",
+        ) -> dict[str, Any]:
             """Execute a SQL query against the dbt project's database.
+                       await self._ensure_initialized_with_context(ctx)
+            output_file is used
+                       - Example: query_database(sql="SELECT * FROM large_table", output_file="temp_auto/results.json")
 
-            BEST PRACTICES:
-            1. Before querying: Inspect schema using get_resource_info() with include_database_schema=True
-            2. Always use {{ ref('model_name') }} for dbt models (never hard-code table paths)
-            3. Always use {{ source('source_name', 'table_name') }} for source tables
-            4. For non-dbt tables: Verify schema with user before querying
-            5. After results: Report "Query Result: X rows retrieved" and summarize key findings
+                       OUTPUT FORMATS:
+                       - json (default): Returns data as JSON array of objects
+                       - csv: Returns comma-separated values with header row
+                       - tsv: Returns tab-separated values with header row
+                       - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
 
-            QUERY EFFICIENCY:
-            - Use aggregations (COUNT, SUM, AVG, etc.) instead of pulling raw data
-            - Apply WHERE filters early to narrow scope before aggregation
-            - Use LIMIT for exploratory queries to get representative samples
-            - Calculate totals, ratios, and trends in SQL rather than returning all rows
-            - Use GROUP BY for categorization within the query
-            - Always ask: "Can SQL answer this question directly?" before returning data
+                       Args:
+                           sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
+                                For exploratory queries, include LIMIT. For aggregations/counts, omit it.
+                           output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
+                                       If provided, only metadata is returned (no preview for CSV/TSV).
+                                       If omitted, all data is returned inline (may consume large context).
+                           output_format: Output format - "json" (default), "csv", or "tsv"
 
-            LARGE RESULT HANDLING:
-            - For queries returning many rows (>100), use output_file parameter to save results to disk
-            - This prevents context window overflow and improves performance
-            - The tool returns metadata + preview instead of full results when output_file is used
-            - Example: query_database(sql="SELECT * FROM large_table", output_file="temp_auto/results.json")
-
-            OUTPUT FORMATS:
-            - json (default): Returns data as JSON array of objects
-            - csv: Returns comma-separated values with header row
-            - tsv: Returns tab-separated values with header row
-            - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
-
-            Args:
-                sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
-                     For exploratory queries, include LIMIT. For aggregations/counts, omit it.
-                output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
-                            If provided, only metadata is returned (no preview for CSV/TSV).
-                            If omitted, all data is returned inline (may consume large context).
-                output_format: Output format - "json" (default), "csv", or "tsv"
-
-            Returns:
-                JSON inline: {"status": "success", "row_count": N, "rows": [...]}
-                JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
-                CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
-                CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
+                       Returns:
+                           JSON inline: {"status": "success", "row_count": N, "rows": [...]}
+                           JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
+                           CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
+                           CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_query_database(ctx, sql, output_file, output_format)
@@ -1853,7 +1975,7 @@ class DbtCoreMcpServer:
                 because they are time-dependent, not change-dependent.
             """
             await self._ensure_initialized_with_context(ctx)
-            return await self.toolImpl_snapshot_models(select, exclude)
+            return await self.toolImpl_snapshot_models(ctx, select, exclude)
 
         @self.app.tool()
         async def install_deps(ctx: Context) -> dict[str, Any]:

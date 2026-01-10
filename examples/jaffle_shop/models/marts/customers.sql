@@ -6,6 +6,7 @@ orders as (
     select * from {{ ref('stg_orders') }}
 ),
 
+-- TESTING: Step 1 - before parse, run, parse sequence
 customer_orders as (
     select
         customer_id,
