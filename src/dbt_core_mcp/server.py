@@ -19,6 +19,8 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
+from mcp import McpError
+from mcp.types import ErrorData
 
 from .dbt.bridge_runner import BridgeRunner
 from .dbt.manifest import ManifestLoader
@@ -205,8 +207,8 @@ class DbtCoreMcpServer:
             python_cmd = detect_python_command(self.project_dir)
             logger.info(f"Creating {'fresh' if self.force_fresh_runner else 'new'} BridgeRunner with command: {python_cmd}")
 
-            # Create bridge runner - use_persistent_process=False for testing isolation
-            self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout, use_persistent_process=False)
+            # Create bridge runner with persistent process for better performance
+            self.runner = BridgeRunner(self.project_dir, python_cmd, timeout=self.timeout, use_persistent_process=True)
 
         return self.runner
 
@@ -315,15 +317,20 @@ class DbtCoreMcpServer:
             # Simplify results for output
             simplified_results = []
             for result in data.get("results", []):
-                simplified_results.append(
-                    {
-                        "unique_id": result.get("unique_id"),
-                        "status": result.get("status"),
-                        "message": result.get("message"),
-                        "execution_time": result.get("execution_time"),
-                        "failures": result.get("failures"),
-                    }
-                )
+                simplified_result = {
+                    "unique_id": result.get("unique_id"),
+                    "status": result.get("status"),
+                    "message": result.get("message"),
+                    "execution_time": result.get("execution_time"),
+                    "failures": result.get("failures"),
+                }
+
+                # Include additional diagnostic fields for failed tests
+                if result.get("status") in ("fail", "error"):
+                    simplified_result["compiled_code"] = result.get("compiled_code")
+                    simplified_result["adapter_response"] = result.get("adapter_response")
+
+                simplified_results.append(simplified_result)
 
             return {
                 "results": simplified_results,
@@ -1087,6 +1094,11 @@ class DbtCoreMcpServer:
         # Continue with existing run_results parsing
         results_list = run_results.get("results", [])
 
+        # Remove heavy fields from results to reduce token usage
+        for result in results_list:
+            result.pop("compiled_code", None)
+            result.pop("raw_code", None)
+
         # Send final progress update with test summary
         await self._report_final_progress(ctx, results_list, "Test", "tests")
 
@@ -1094,6 +1106,48 @@ class DbtCoreMcpServer:
         if not results_list:
             raise RuntimeError(f"No tests matched selector: {select or selector or 'all'}")
 
+        # Check if any tests failed - if so, return RPC error with structured data
+        failed_tests = [r for r in results_list if r.get("status") == "fail"]
+        if failed_tests:
+            # Check if any failed tests are unit tests (they have diff output)
+            has_unit_test_failures = any("unit_test" in r.get("unique_id", "") for r in failed_tests)
+
+            # Add diff format legend for unit test failures
+            diff_legend = ""
+            if has_unit_test_failures:
+                diff_legend = (
+                    "\n\nUnit test diff format (daff tabular diff):\n"
+                    "  @@    Header row with column names\n"
+                    "  +++   Row present in actual output but missing from expected\n"
+                    "  ---   Row present in expected but missing from actual output\n"
+                    "  →     Row with at least one modified cell (→, -->, etc.)\n"
+                    "  ...   Rows omitted for brevity\n"
+                    "  old_value→new_value   Shows the change in a specific cell\n"
+                    "\nFull specification: https://paulfitz.github.io/daff-doc/spec.html"
+                )
+
+            error_data = {
+                "error": "test_failure",
+                "message": f"{len(failed_tests)} test(s) failed{diff_legend}",
+                "command": " ".join(args),
+                "results": results_list,  # Include ALL results (both passing and failing)
+                "elapsed_time": run_results.get("elapsed_time"),
+                "summary": {
+                    "total": len(results_list),
+                    "passed": len([r for r in results_list if r.get("status") == "pass"]),
+                    "failed": len(failed_tests),
+                },
+            }
+            # Use McpError with custom code for business failures (not system errors)
+            # Code -32000 to -32099 are reserved for implementation-defined server errors
+            raise McpError(
+                ErrorData(
+                    code=-32000,  # Server error (business failure, not system error)
+                    message=json.dumps(error_data, indent=2),
+                )
+            )
+
+        # All tests passed - return success
         return {
             "status": "success",
             "command": " ".join(args),
@@ -1798,6 +1852,14 @@ class DbtCoreMcpServer:
 
                 # Stop on first failure for quick feedback
                 test_models(fail_fast=True)
+
+            Note: Unit test failures show diffs in the "daff" tabular format:
+                @@ = column headers
+                +++ = row in actual, not in expected (extra row)
+                --- = row in expected, not in actual (missing row)
+                → = row with modified cell(s), shown as old_value→new_value
+                ... = omitted matching rows
+                Full format spec: https://paulfitz.github.io/daff-doc/spec.html
             """
             await self._ensure_initialized_with_context(ctx)
             return await self.toolImpl_test_models(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, fail_fast)

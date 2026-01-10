@@ -462,11 +462,14 @@ class BridgeRunner:
 
         # Get environment-specific variables (e.g., PIPENV_IGNORE_VIRTUALENVS for pipenv)
         env_vars = get_env_vars(self.python_command)
-        env = None
-        if env_vars:
-            import os
+        import os
 
-            env = os.environ.copy()
+        env = os.environ.copy()
+
+        # Force UTF-8 encoding for subprocess to handle Unicode characters in dbt output
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        if env_vars:
             env.update(env_vars)
             logger.info(f"Adding environment variables: {list(env_vars.keys())}")
 

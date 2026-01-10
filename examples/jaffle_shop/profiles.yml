@@ -6,5 +6,7 @@ jaffle_shop:
       path: jaffle_shop.duckdb
       schema: main
       threads: 4
+      # Allow concurrent access for tests while MCP server is running
+      access_mode: read_write
       
       
