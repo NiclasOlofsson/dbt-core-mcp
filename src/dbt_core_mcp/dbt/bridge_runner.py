@@ -136,7 +136,15 @@ class BridgeRunner:
             import os
 
             env = os.environ.copy()
+            # Force UTF-8 encoding for subprocess to handle Unicode characters in dbt output
+            env["PYTHONIOENCODING"] = "utf-8"
             env.update(env_vars)
+        else:
+            import os
+
+            env = os.environ.copy()
+            # Force UTF-8 encoding for subprocess to handle Unicode characters in dbt output
+            env["PYTHONIOENCODING"] = "utf-8"
 
         # Start process
         self._dbt_process = await asyncio.create_subprocess_exec(
