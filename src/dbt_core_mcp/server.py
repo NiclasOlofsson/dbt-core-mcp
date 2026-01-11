@@ -10,7 +10,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable
 from urllib.parse import unquote
 from urllib.request import url2pathname
 
@@ -26,6 +26,9 @@ from .dbt.bridge_runner import BridgeRunner
 from .dbt.manifest import ManifestLoader
 from .utils.env_detector import detect_python_command
 
+# Type alias for progress reporting callbacks
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +39,7 @@ class DbtCoreMcpServer:
     Provides tools for interacting with dbt projects.
     """
 
-    def __init__(self, project_dir: Optional[str] = None, timeout: Optional[float] = None) -> None:
+    def __init__(self, project_dir: str | None = None, timeout: float | None = None) -> None:
         """Initialize the server.
 
         Args:
@@ -174,7 +177,7 @@ class DbtCoreMcpServer:
             return {}
 
         try:
-            with open(project_file) as f:
+            with open(project_file, encoding="utf-8") as f:
                 config = yaml.safe_load(f)
 
             return {
@@ -311,7 +314,7 @@ class DbtCoreMcpServer:
             return {"results": [], "elapsed_time": 0}
 
         try:
-            with open(run_results_path) as f:
+            with open(run_results_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Simplify results for output
@@ -400,7 +403,7 @@ class DbtCoreMcpServer:
 
         try:
             # Load state (before) manifest
-            with open(state_manifest_path) as f:
+            with open(state_manifest_path, encoding="utf-8") as f:
                 state_manifest = json.load(f)
 
             # Load current (after) manifest
@@ -522,6 +525,78 @@ class DbtCoreMcpServer:
 
         logger.info(f"Extracted {len(columns)} columns for {model_name}: {columns}")
         return sorted(columns)
+
+    def _clear_stale_run_results(self) -> None:
+        """Delete stale run_results.json before command execution.
+
+        This prevents reading cached results from previous runs.
+        """
+        if not self.project_dir:
+            return
+
+        run_results_path = self.project_dir / "target" / "run_results.json"
+        if run_results_path.exists():
+            try:
+                run_results_path.unlink()
+                logger.debug("Deleted stale run_results.json before execution")
+            except OSError as e:
+                logger.warning(f"Could not delete stale run_results.json: {e}")
+
+    async def _save_execution_state(self) -> None:
+        """Save current manifest as state for future state-based runs.
+
+        After successful execution, saves manifest.json to target/state_last_run/
+        so future runs can use --state to detect modifications.
+        """
+        if not self.project_dir:
+            return
+
+        state_dir = self.project_dir / "target" / "state_last_run"
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+        runner = await self._get_runner()
+        manifest_path = runner.get_manifest_path()  # type: ignore
+
+        try:
+            shutil.copy(manifest_path, state_dir / "manifest.json")
+            logger.debug(f"Saved execution state to {state_dir}")
+        except OSError as e:
+            logger.warning(f"Failed to save execution state: {e}")
+
+    def _validate_and_parse_results(self, result: Any, command_name: str) -> dict[str, Any]:
+        """Parse run_results.json and validate execution succeeded.
+
+        Args:
+            result: The execution result from dbt runner
+            command_name: Name of dbt command (e.g., "run", "test", "build", "seed")
+
+        Returns:
+            Parsed run_results dictionary
+
+        Raises:
+            RuntimeError: If dbt failed before execution (parse error, connection failure, etc.)
+        """
+        run_results = self._parse_run_results()
+
+        if not run_results.get("results"):
+            # No results means dbt failed before execution
+            if result and not result.success:
+                error_msg = str(result.exception) if result.exception else f"dbt {command_name} execution failed"
+                # Extract specific error from stdout if available
+                if result.stdout and "Error" in result.stdout:
+                    lines = result.stdout.split("\n")
+                    for i, line in enumerate(lines):
+                        if "Error" in line or "error" in line:
+                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
+                            break
+                else:
+                    # Include full stdout/stderr for debugging when no specific error found
+                    stdout_preview = (result.stdout[:500] + "...") if result.stdout and len(result.stdout) > 500 else (result.stdout or "(no stdout)")
+                    stderr_preview = (result.stderr[:500] + "...") if result.stderr and len(result.stderr) > 500 else (result.stderr or "(no stderr)")
+                    error_msg = f"{error_msg}\nstdout: {stdout_preview}\nstderr: {stderr_preview}"
+                raise RuntimeError(f"dbt {command_name} failed to execute: {error_msg}")
+
+        return run_results
 
     async def _prepare_state_based_selection(
         self,
@@ -766,7 +841,7 @@ class DbtCoreMcpServer:
                         output_path = Path(output_file)
                         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                        with open(output_path, "w", newline="") as f:
+                        with open(output_path, "w", encoding="utf-8", newline="") as f:
                             f.write(csv_string)
 
                         # Get file size
@@ -798,7 +873,7 @@ class DbtCoreMcpServer:
                         output_path.parent.mkdir(parents=True, exist_ok=True)
 
                         # Write rows to file
-                        with open(output_path, "w") as f:
+                        with open(output_path, "w", encoding="utf-8") as f:
                             json.dump(rows, f, indent=2)
 
                         # Get file size
@@ -943,30 +1018,13 @@ class DbtCoreMcpServer:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
         # Delete stale run_results.json to ensure we only read fresh results
-        if self.project_dir:
-            run_results_path = self.project_dir / "target" / "run_results.json"
-            if run_results_path.exists():
-                run_results_path.unlink()
-                logger.debug("Deleted stale run_results.json before execution")
+        self._clear_stale_run_results()
 
         runner = await self._get_runner()
         result = await runner.invoke(args, progress_callback=progress_callback if ctx else None, expected_total=expected_total)  # type: ignore
 
         # Parse run_results.json to discriminate system errors from business outcomes
-        run_results = self._parse_run_results()
-
-        if not run_results.get("results"):
-            # No results means dbt failed before execution (parse error, connection failure, etc.)
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "dbt run execution failed"
-                # Extract specific error from stdout if available
-                if result.stdout and "Error" in result.stdout:
-                    lines = result.stdout.split("\n")
-                    for i, line in enumerate(lines):
-                        if "Error" in line or "error" in line:
-                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
-                            break
-                raise RuntimeError(f"dbt run failed to execute: {error_msg}")
+        run_results = self._validate_and_parse_results(result, "run")
 
         # Business outcome - dbt executed models (some may have failed)
         # Continue with existing run_results parsing
@@ -996,12 +1054,8 @@ class DbtCoreMcpServer:
                         schema_changes[model_name]["removed"] = removed
 
         # Save state on success for next modified run
-        if result.success and self.project_dir:
-            state_dir = self.project_dir / "target" / "state_last_run"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            runner = await self._get_runner()
-            manifest_path = runner.get_manifest_path()  # type: ignore
-            shutil.copy(manifest_path, state_dir / "manifest.json")
+        if result.success:
+            await self._save_execution_state()
 
         # Send final progress update with run summary
         results_list = run_results.get("results", [])
@@ -1065,30 +1119,13 @@ class DbtCoreMcpServer:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
         # Delete stale run_results.json to ensure we only read fresh results
-        if self.project_dir:
-            run_results_path = self.project_dir / "target" / "run_results.json"
-            if run_results_path.exists():
-                run_results_path.unlink()
-                logger.debug("Deleted stale run_results.json before execution")
+        self._clear_stale_run_results()
 
         runner = await self._get_runner()
         result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         # Parse run_results.json to discriminate system errors from business outcomes
-        run_results = self._parse_run_results()
-
-        if not run_results.get("results"):
-            # No results means dbt failed before execution (parse error, connection failure, etc.)
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "dbt test execution failed"
-                # Extract specific error from stdout if available
-                if result.stdout and "Error" in result.stdout:
-                    lines = result.stdout.split("\n")
-                    for i, line in enumerate(lines):
-                        if "Error" in line or "error" in line:
-                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
-                            break
-                raise RuntimeError(f"dbt test failed to execute: {error_msg}")
+        run_results = self._validate_and_parse_results(result, "test")
 
         # Business outcome - dbt executed tests (some may have failed)
         # Continue with existing run_results parsing
@@ -1206,38 +1243,18 @@ class DbtCoreMcpServer:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
         # Delete stale run_results.json to ensure we only read fresh results
-        if self.project_dir:
-            run_results_path = self.project_dir / "target" / "run_results.json"
-            if run_results_path.exists():
-                run_results_path.unlink()
-                logger.debug("Deleted stale run_results.json before execution")
+        self._clear_stale_run_results()
 
         runner = await self._get_runner()
         result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         # Parse run_results.json to discriminate system errors from business outcomes
-        run_results = self._parse_run_results()
-
-        if not run_results.get("results"):
-            # No results means dbt failed before execution
-            if result and not result.success:
-                error_msg = str(result.exception) if result.exception else "dbt build execution failed"
-                if result.stdout and "Error" in result.stdout:
-                    lines = result.stdout.split("\n")
-                    for i, line in enumerate(lines):
-                        if "Error" in line or "error" in line:
-                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
-                            break
-                raise RuntimeError(f"dbt build failed to execute: {error_msg}")
+        run_results = self._validate_and_parse_results(result, "build")
 
         # Business outcome - dbt executed successfully
         # Save state on success for next modified run
-        if result and result.success and self.project_dir:
-            state_dir = self.project_dir / "target" / "state_last_run"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            runner = await self._get_runner()
-            manifest_path = runner.get_manifest_path()  # type: ignore
-            shutil.copy(manifest_path, state_dir / "manifest.json")
+        if result and result.success:
+            await self._save_execution_state()
 
         # Send final progress update with build summary
         results_list = run_results.get("results", [])
@@ -1317,38 +1334,18 @@ class DbtCoreMcpServer:
                 await ctx.report_progress(progress=current, total=total, message=message)
 
         # Delete stale run_results.json to ensure we only read fresh results
-        if self.project_dir:
-            run_results_path = self.project_dir / "target" / "run_results.json"
-            if run_results_path.exists():
-                run_results_path.unlink()
-                logger.debug("Deleted stale run_results.json before execution")
+        self._clear_stale_run_results()
 
         runner = await self._get_runner()
         result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
 
         # Parse run_results.json to discriminate system errors from business outcomes
-        run_results = self._parse_run_results()
-
-        if not run_results.get("results"):
-            # No results means dbt failed before execution
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "dbt seed execution failed"
-                if result.stdout and "Error" in result.stdout:
-                    lines = result.stdout.split("\n")
-                    for i, line in enumerate(lines):
-                        if "Error" in line or "error" in line:
-                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
-                            break
-                raise RuntimeError(f"dbt seed failed to execute: {error_msg}")
+        run_results = self._validate_and_parse_results(result, "seed")
 
         # Business outcome - dbt executed successfully
         # Save state on success for next modified run
-        if result.success and self.project_dir:
-            state_dir = self.project_dir / "target" / "state_last_run"
-            state_dir.mkdir(parents=True, exist_ok=True)
-            runner = await self._get_runner()
-            manifest_path = runner.get_manifest_path()  # type: ignore
-            shutil.copy(manifest_path, state_dir / "manifest.json")
+        if result.success:
+            await self._save_execution_state()
 
         # Parse run_results.json for details
         run_results = self._parse_run_results()
@@ -1403,29 +1400,13 @@ class DbtCoreMcpServer:
         logger.info(f"Running DBT snapshot with args: {args}")
 
         # Delete stale run_results.json to ensure we only read fresh results
-        if self.project_dir:
-            run_results_path = self.project_dir / "target" / "run_results.json"
-            if run_results_path.exists():
-                run_results_path.unlink()
-                logger.debug("Deleted stale run_results.json before execution")
+        self._clear_stale_run_results()
 
         runner = await self._get_runner()
         result = await runner.invoke(args)  # type: ignore
 
         # Parse run_results.json to discriminate system errors from business outcomes
-        run_results = self._parse_run_results()
-
-        if not run_results.get("results"):
-            # No results means dbt failed before execution
-            if not result.success:
-                error_msg = str(result.exception) if result.exception else "dbt snapshot execution failed"
-                if result.stdout and "Error" in result.stdout:
-                    lines = result.stdout.split("\n")
-                    for i, line in enumerate(lines):
-                        if "Error" in line or "error" in line:
-                            error_msg = "\n".join(lines[i : min(i + 5, len(lines))]).strip()
-                            break
-                raise RuntimeError(f"dbt snapshot failed to execute: {error_msg}")
+        run_results = self._validate_and_parse_results(result, "snapshot")
 
         # Send tool-specific final progress
         if ctx:
@@ -2072,7 +2053,7 @@ class DbtCoreMcpServer:
         self.app.run(show_banner=False)
 
 
-def create_server(project_dir: Optional[str] = None, timeout: Optional[float] = None) -> DbtCoreMcpServer:
+def create_server(project_dir: str | None = None, timeout: float | None = None) -> DbtCoreMcpServer:
     """Create a new dbt Core MCP server instance.
 
     Args:
