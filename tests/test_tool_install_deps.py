@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dbt_core_mcp.tools.install_deps import _implementation as install_deps_impl
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
@@ -12,7 +14,7 @@ if TYPE_CHECKING:
 async def test_install_deps_no_packages(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test install_deps when no packages.yml exists (or empty)."""
     # Jaffle shop doesn't have packages.yml, so this should succeed with 0 packages
-    result = await jaffle_shop_server.toolImpl_install_deps()
+    result = await install_deps_impl(jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "installed_packages" in result

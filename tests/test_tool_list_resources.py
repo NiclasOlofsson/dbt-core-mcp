@@ -1,10 +1,12 @@
 """
-Tests for toolImpl_list_resources.
+Tests for list_resources tool.
 """
 
 from typing import TYPE_CHECKING
 
 import pytest
+
+from dbt_core_mcp.tools.list_resources import _implementation as list_resources_impl
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -13,7 +15,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test listing all resources without filter."""
-    result = await jaffle_shop_server.toolImpl_list_resources()
+    result = await list_resources_impl(None, jaffle_shop_server.state)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -27,7 +29,7 @@ async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> Non
 @pytest.mark.asyncio
 async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by model resource type."""
-    result = await jaffle_shop_server.toolImpl_list_resources(resource_type="model")
+    result = await list_resources_impl("model", jaffle_shop_server.state)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -44,7 +46,7 @@ async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServe
 @pytest.mark.asyncio
 async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by source resource type."""
-    result = await jaffle_shop_server.toolImpl_list_resources(resource_type="source")
+    result = await list_resources_impl("source", jaffle_shop_server.state)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -61,7 +63,7 @@ async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServ
 @pytest.mark.asyncio
 async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test filtering by seed resource type."""
-    result = await jaffle_shop_server.toolImpl_list_resources(resource_type="seed")
+    result = await list_resources_impl("seed", jaffle_shop_server.state)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -78,7 +80,7 @@ async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer
 @pytest.mark.asyncio
 async def test_list_resources_consistent_structure(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test that all resources have consistent structure."""
-    result = await jaffle_shop_server.toolImpl_list_resources()
+    result = await list_resources_impl(None, jaffle_shop_server.state)
 
     assert len(result) > 0
 
@@ -98,4 +100,4 @@ async def test_list_resources_invalid_type(jaffle_shop_server: "DbtCoreMcpServer
     import pytest
 
     with pytest.raises(ValueError, match="Invalid resource_type"):
-        await jaffle_shop_server.toolImpl_list_resources(resource_type="invalid_type")
+        await list_resources_impl("invalid_type", jaffle_shop_server.state)

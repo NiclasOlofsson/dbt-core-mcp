@@ -9,12 +9,12 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from ..server import SharedState
+from ..server import DbtCoreServerContext
 
 logger = logging.getLogger(__name__)
 
 
-def setup(app: FastMCP, state: SharedState) -> None:
+def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
     """Register this tool with the MCP server.
 
     Called automatically by server._register_tools() during initialization.
@@ -72,7 +72,7 @@ async def _implementation(
     resource_type: str | None,
     include_database_schema: bool,
     include_compiled_sql: bool,
-    state: SharedState,
+    state: DbtCoreServerContext,
 ) -> dict[str, Any]:
     """Implementation logic - separated for testability.
 

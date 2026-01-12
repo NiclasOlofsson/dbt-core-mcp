@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
@@ -11,7 +13,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_seed_all(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test loading all seed files."""
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None)
+    result = await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -30,7 +32,7 @@ async def test_seed_all(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test loading a specific seed file."""
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None, select="raw_customers")
+    result = await load_seeds_impl(None, "raw_customers", None, False, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -45,7 +47,7 @@ async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
 async def test_seed_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining select_state_modified and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
-        await jaffle_shop_server.toolImpl_seed_data(ctx=None, select="raw_customers", select_state_modified=True)
+        await load_seeds_impl(None, "raw_customers", None, True, False, False, False, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
@@ -60,7 +62,7 @@ async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcp
         shutil.rmtree(state_dir)
 
     with pytest.raises(RuntimeError, match="No previous state found"):
-        await jaffle_shop_server.toolImpl_seed_data(ctx=None, select_state_modified=True)
+        await load_seeds_impl(None, None, None, True, False, False, False, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
@@ -70,7 +72,7 @@ async def test_seed_creates_state(jaffle_shop_server: "DbtCoreMcpServer"):
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
 
     # First seed should create state
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None)
+    result = await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert state_dir.exists()
@@ -80,7 +82,7 @@ async def test_seed_creates_state(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_seed_full_refresh(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test full_refresh flag is passed to dbt."""
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None, full_refresh=True)
+    result = await load_seeds_impl(None, None, None, False, False, True, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "--full-refresh" in result["command"]
@@ -89,7 +91,7 @@ async def test_seed_full_refresh(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_seed_show(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test show flag is passed to dbt."""
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None, show=True)
+    result = await load_seeds_impl(None, None, None, False, False, False, True, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "--show" in result["command"]
@@ -98,7 +100,7 @@ async def test_seed_show(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_seed_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific seeds."""
-    result = await jaffle_shop_server.toolImpl_seed_data(ctx=None, exclude="raw_customers")
+    result = await load_seeds_impl(None, None, "raw_customers", False, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "--exclude raw_customers" in result["command"]

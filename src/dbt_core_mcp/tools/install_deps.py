@@ -9,12 +9,12 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from ..server import SharedState
+from ..server import DbtCoreServerContext
 
 logger = logging.getLogger(__name__)
 
 
-def setup(app: FastMCP, state: SharedState) -> None:
+def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
     """Register this tool with the MCP server.
 
     Called automatically by server._register_tools() during initialization.
@@ -58,14 +58,12 @@ def setup(app: FastMCP, state: SharedState) -> None:
         Note: This is an interactive development tool, not infrastructure automation.
         It enables the LLM to act on its own recommendations mid-conversation.
         """
-        # Initialize state if needed (execution tool uses force_parse=False)
-        await state.ensure_initialized(ctx, force_parse=False)
-
+        # Initialization handled by InitializationMiddleware
         # Call implementation function (pure logic)
         return await _implementation(state)
 
 
-async def _implementation(state: SharedState) -> dict[str, Any]:
+async def _implementation(state: DbtCoreServerContext) -> dict[str, Any]:
     """Implementation logic - separated for testability.
 
     Args:

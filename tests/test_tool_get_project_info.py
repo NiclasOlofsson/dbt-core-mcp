@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dbt_core_mcp.tools.get_project_info import _implementation as get_project_info_impl
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
@@ -13,7 +15,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info with dbt debug enabled (default)."""
-    result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=True)
+    result = await get_project_info_impl(True, jaffle_shop_server.state)
 
     # Basic project info
     assert result["project_name"] == "jaffle_shop"
@@ -33,7 +35,7 @@ async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer
 @pytest.mark.asyncio
 async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info without running dbt debug."""
-    result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=False)
+    result = await get_project_info_impl(False, jaffle_shop_server.state)
 
     # Basic project info should still be present
     assert result["project_name"] == "jaffle_shop"
@@ -49,7 +51,7 @@ async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpSer
 @pytest.mark.asyncio
 async def test_get_project_info_contains_metadata(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_project_info contains expected metadata fields."""
-    result = await jaffle_shop_server.toolImpl_get_project_info(run_debug=False)
+    result = await get_project_info_impl(False, jaffle_shop_server.state)
 
     # Check for common metadata fields
     assert "project_name" in result

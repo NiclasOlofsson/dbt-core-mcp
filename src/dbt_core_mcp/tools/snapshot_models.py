@@ -9,12 +9,12 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
-from ..server import SharedState
+from ..server import DbtCoreServerContext
 
 logger = logging.getLogger(__name__)
 
 
-def setup(app: FastMCP, state: SharedState) -> None:
+def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
     """Register this tool with the MCP server.
 
     Called automatically by server._register_tools() during initialization.
@@ -60,9 +60,7 @@ def setup(app: FastMCP, state: SharedState) -> None:
             # Run tagged snapshots
             snapshot_models(select="tag:daily")
         """
-        # Initialize state if needed (execution tool uses force_parse=False)
-        await state.ensure_initialized(ctx, force_parse=False)
-
+        # Initialization handled by InitializationMiddleware
         # Call implementation function (pure logic)
         return await _implementation(ctx, select, exclude, state)
 
@@ -71,7 +69,7 @@ async def _implementation(
     ctx: Context | None,
     select: str | None,
     exclude: str | None,
-    state: SharedState,
+    state: DbtCoreServerContext,
 ) -> dict[str, Any]:
     """Implementation logic - separated for testability.
 

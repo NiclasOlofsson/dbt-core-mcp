@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dbt_core_mcp.tools.snapshot_models import _implementation as snapshot_models_impl
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
@@ -11,7 +13,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_snapshot_all(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running all snapshots."""
-    result = await jaffle_shop_server.toolImpl_snapshot_models(ctx=None)
+    result = await snapshot_models_impl(None, None, None, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -30,7 +32,7 @@ async def test_snapshot_all(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_snapshot_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running a specific snapshot."""
-    result = await jaffle_shop_server.toolImpl_snapshot_models(ctx=None, select="customers_snapshot")
+    result = await snapshot_models_impl(None, "customers_snapshot", None, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -46,4 +48,4 @@ async def test_snapshot_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding all snapshots raises RuntimeError."""
     # Jaffle shop only has customers_snapshot, so excluding it means no snapshots match
     with pytest.raises(RuntimeError, match="No snapshots matched selector"):
-        await jaffle_shop_server.toolImpl_snapshot_models(ctx=None, exclude="customers_snapshot")
+        await snapshot_models_impl(None, None, "customers_snapshot", jaffle_shop_server.state)

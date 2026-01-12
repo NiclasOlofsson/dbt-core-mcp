@@ -4,6 +4,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dbt_core_mcp.tools.run_models import _implementation as run_models_impl
+from dbt_core_mcp.tools.test_models import _implementation as test_models_impl
+
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
@@ -11,7 +14,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running all tests."""
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None)
+    result = await test_models_impl(None, None, None, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -30,7 +33,7 @@ async def test_test_all_models(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test running tests for a specific model."""
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers")
+    result = await test_models_impl(None, "customers", None, False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -45,7 +48,7 @@ async def test_test_specific_model(jaffle_shop_server: "DbtCoreMcpServer"):
 async def test_test_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining select_state_modified and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
-        await jaffle_shop_server.toolImpl_test_models(ctx=None, select="customers", select_state_modified=True)
+        await test_models_impl(None, "customers", None, True, False, False, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
@@ -61,7 +64,7 @@ async def test_test_modified_only_no_state_tests_all(jaffle_shop_server: "DbtCor
 
     # With no state, select_state_modified should raise RuntimeError
     with pytest.raises(RuntimeError, match="No previous state found"):
-        await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
+        await test_models_impl(None, None, None, True, False, False, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
@@ -72,19 +75,19 @@ async def test_test_creates_uses_state(jaffle_shop_server: "DbtCoreMcpServer"):
     state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
 
     # Ensure we have state by running models first
-    run_result = await jaffle_shop_server.toolImpl_run_models(ctx=None)
+    run_result = await run_models_impl(None, None, None, False, False, False, False, False, True, jaffle_shop_server.state)
     assert run_result["status"] == "success"
     assert state_dir.exists()
 
     # When nothing modified, selector returns no tests - raises RuntimeError
     with pytest.raises(RuntimeError, match="No tests matched selector"):
-        await jaffle_shop_server.toolImpl_test_models(ctx=None, select_state_modified=True)
+        await test_models_impl(None, None, None, True, False, False, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
 async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test fail_fast flag is passed to dbt."""
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, fail_fast=True)
+    result = await test_models_impl(None, None, None, False, False, True, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "--fail-fast" in result["command"]
@@ -93,7 +96,7 @@ async def test_test_fail_fast(jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_test_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific tests."""
-    result = await jaffle_shop_server.toolImpl_test_models(ctx=None, exclude="not_null*")
+    result = await test_models_impl(None, None, "not_null*", False, False, False, jaffle_shop_server.state)
 
     assert result["status"] == "success"
     assert "--exclude not_null*" in result["command"]
