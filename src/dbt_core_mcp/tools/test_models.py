@@ -1,0 +1,237 @@
+"""Run dbt tests on models and sources.
+
+This module implements the test_models tool for dbt Core MCP.
+"""
+
+import json
+import logging
+from typing import Any
+
+from fastmcp import FastMCP
+from fastmcp.exceptions import McpError  # type: ignore[attr-defined]
+from fastmcp.server.context import Context
+from mcp.types import ErrorData
+
+from ..server import SharedState
+
+logger = logging.getLogger(__name__)
+
+
+def setup(app: FastMCP, state: SharedState) -> None:
+    """Register this tool with the MCP server.
+
+    Called automatically by server._register_tools() during initialization.
+
+    Args:
+        app: FastMCP instance
+        state: Shared state object accessible to all tools
+    """
+
+    @app.tool()
+    async def test_models(
+        ctx: Context,
+        select: str | None = None,
+        exclude: str | None = None,
+        select_state_modified: bool = False,
+        select_state_modified_plus_downstream: bool = False,
+        fail_fast: bool = False,
+    ) -> dict[str, Any]:
+        """Run dbt tests on models and sources.
+
+        **When to use**: After running models to validate data quality. Tests check constraints
+        like uniqueness, not-null, relationships, and custom data quality rules.
+
+        **Important**: Ensure seeds and models are built before running tests that depend on them.
+
+        State-based selection modes (uses dbt state:modified selector):
+        - select_state_modified: Test only models modified since last successful run (state:modified)
+        - select_state_modified_plus_downstream: Test modified + downstream dependencies (state:modified+)
+          Note: Requires select_state_modified=True
+
+        Manual selection (alternative to state-based):
+        - select: dbt selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
+        - exclude: Exclude specific tests
+
+        Args:
+            select: Manual selector for tests/models to test
+            exclude: Exclude selector
+            select_state_modified: Use state:modified selector (changed models only)
+            select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
+            fail_fast: Stop execution on first failure
+
+        Returns:
+            Test results with status and failures
+
+        See also:
+            - run_models(): Execute models before testing them
+            - build_models(): Run models + tests together automatically
+            - load_seeds(): Load seeds if tests reference seed data
+
+        Examples:
+            # After building a model, test it
+            run_models(select="customers")
+            test_models(select="customers")
+
+            # Test only generic tests (not singular)
+            test_models(select="test_type:generic")
+
+            # Test everything that changed
+            test_models(select_state_modified=True)
+
+            # Stop on first failure for quick feedback
+            test_models(fail_fast=True)
+
+        Note: Unit test failures show diffs in the "daff" tabular format:
+            @@ = column headers
+            +++ = row in actual, not in expected (extra row)
+            --- = row in expected, not in actual (missing row)
+            → = row with modified cell(s), shown as old_value→new_value
+            ... = omitted matching rows
+            Full format spec: https://paulfitz.github.io/daff-doc/spec.html
+        """
+        # Initialize state if needed (execution tool uses force_parse=False)
+        await state.ensure_initialized(ctx, force_parse=False)
+
+        # Call implementation function (pure logic)
+        return await _implementation(
+            ctx,
+            select,
+            exclude,
+            select_state_modified,
+            select_state_modified_plus_downstream,
+            fail_fast,
+            state,
+        )
+
+
+async def _implementation(
+    ctx: Context | None,
+    select: str | None,
+    exclude: str | None,
+    select_state_modified: bool,
+    select_state_modified_plus_downstream: bool,
+    fail_fast: bool,
+    state: SharedState,
+) -> dict[str, Any]:
+    """Implementation logic - separated for testability.
+
+    Args:
+        ctx: MCP context for progress reporting
+        select: Manual selector
+        exclude: Exclude selector
+        select_state_modified: Use state-based modified selector
+        select_state_modified_plus_downstream: Extend to modified+
+        fail_fast: Stop on first failure
+        state: Shared state object
+
+    Returns:
+        Dictionary with test results
+
+    Raises:
+        McpError: If any tests fail (business failure)
+        RuntimeError: If no tests matched selector
+    """
+
+    # Prepare state-based selection (validates and returns selector)
+    selector = await state.prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
+
+    # Early return if state-based requested but no state exists
+    if select_state_modified and not selector:
+        raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt run' or 'dbt build' first to create baseline state.")
+
+    # Build command args
+    args = ["test"]
+
+    # Add selector if we have one (state-based or manual)
+    if selector:
+        args.extend(["-s", selector, "--state", "target/state_last_run"])
+    elif select:
+        args.extend(["-s", select])
+
+    if exclude:
+        args.extend(["--exclude", exclude])
+
+    if fail_fast:
+        args.append("--fail-fast")
+
+    # Execute with progress reporting
+    logger.info(f"Running dbt tests with args: {args}")
+
+    # Define progress callback if context available
+    async def progress_callback(current: int, total: int, message: str) -> None:
+        if ctx:
+            await ctx.report_progress(progress=current, total=total, message=message)
+
+    # Delete stale run_results.json to ensure we only read fresh results
+    state.clear_stale_run_results()
+
+    runner = await state.get_runner()
+    result = await runner.invoke(args, progress_callback=progress_callback if ctx else None)  # type: ignore
+
+    # Parse run_results.json to discriminate system errors from business outcomes
+    run_results = state.validate_and_parse_results(result, "test")
+
+    # Business outcome - dbt executed tests (some may have failed)
+    # Continue with existing run_results parsing
+    results_list = run_results.get("results", [])
+
+    # Remove heavy fields from results to reduce token usage
+    for result in results_list:
+        result.pop("compiled_code", None)
+        result.pop("raw_code", None)
+
+    # Send final progress update with test summary
+    await state.report_final_progress(ctx, results_list, "Test", "tests")
+
+    # Empty results means selector matched nothing - this is an error
+    if not results_list:
+        raise RuntimeError(f"No tests matched selector: {select or selector or 'all'}")
+
+    # Check if any tests failed - if so, return RPC error with structured data
+    failed_tests = [r for r in results_list if r.get("status") == "fail"]
+    if failed_tests:
+        # Check if any failed tests are unit tests (they have diff output)
+        has_unit_test_failures = any("unit_test" in r.get("unique_id", "") for r in failed_tests)
+
+        # Add diff format legend for unit test failures
+        diff_legend = ""
+        if has_unit_test_failures:
+            diff_legend = (
+                "\n\nUnit test diff format (daff tabular diff):\n"
+                "  @@    Header row with column names\n"
+                "  +++   Row present in actual output but missing from expected\n"
+                "  ---   Row present in expected but missing from actual output\n"
+                "  →     Row with at least one modified cell (→, -->, etc.)\n"
+                "  ...   Rows omitted for brevity\n"
+                "  old_value→new_value   Shows the change in a specific cell\n"
+                "\nFull specification: https://paulfitz.github.io/daff-doc/spec.html"
+            )
+
+        error_data = {
+            "error": "test_failure",
+            "message": f"{len(failed_tests)} test(s) failed{diff_legend}",
+            "command": " ".join(args),
+            "results": results_list,  # Include ALL results (both passing and failing)
+            "elapsed_time": run_results.get("elapsed_time"),
+            "summary": {
+                "total": len(results_list),
+                "passed": len([r for r in results_list if r.get("status") == "pass"]),
+                "failed": len(failed_tests),
+            },
+        }
+        # Use McpError with custom code for business failures (not system errors)
+        # Code -32000 to -32099 are reserved for implementation-defined server errors
+        raise McpError(
+            ErrorData(
+                code=-32000,  # Server error (business failure, not system error)
+                message=json.dumps(error_data, indent=2),
+            )
+        )
+
+    # All tests passed - return success
+    return {
+        "status": "success",
+        "command": " ".join(args),
+        "results": results_list,
+        "elapsed_time": run_results.get("elapsed_time"),
+    }
