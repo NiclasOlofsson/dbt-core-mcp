@@ -16,8 +16,9 @@ This file contains workspace-specific information for AI conversations.
 1. **dbt-core-mcp Pre-Commit Validation Protocol**:
    - STEP 1: Before staging/committing ANY code changes, run CI validation sequence in order:
      - a) `uv run ruff check src tests`
-     - b) `uv run pyright src tests`
-     - c) `uv run pytest`
+     - b) `uv run ruff format --check src tests`
+     - c) `uv run pyright src tests`
+     - d) `uv run pytest`
    - STEP 2: Verify ALL steps succeed with exit code 0
    - STEP 3: If ANY step fails, fix issues and restart from STEP 1
    - STEP 4: Restore `.vscode/mcp.json` to original state (revert `_RESTART` counter changes)

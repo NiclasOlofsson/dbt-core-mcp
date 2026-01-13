@@ -244,7 +244,7 @@ class DbtCoreMcpServer:
         runner = await self._get_runner()
 
         # Run parse if needed and not skipped via force_parse=False
-        if needs_parse and force_parse:
+        if needs_parse or force_parse:
             logger.info("Running dbt parse...")
             parse_args = ["parse"]  # Use partial parse for efficiency
             result = await runner.invoke(parse_args)
