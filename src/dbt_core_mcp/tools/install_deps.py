@@ -24,7 +24,8 @@ async def _implementation(
 
     Separated for testing purposes - tests call this directly with explicit state.
     The @tool() decorated install_deps() function calls this with injected dependencies.
-    """
+    """  # Ensure dbt components are initialized
+    await state.ensure_initialized(ctx, force_parse=False)
     # Execute dbt deps
     logger.info("Running dbt deps to install packages")
 

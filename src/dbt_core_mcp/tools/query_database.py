@@ -33,6 +33,9 @@ async def _implementation(
     Separated for testing purposes - tests call this directly with explicit state.
     The @tool() decorated query_database() function calls this with injected dependencies.
     """
+    # Ensure dbt components are initialized
+    await state.ensure_initialized(ctx, force_parse=False)
+
     async def progress_callback(current: int, total: int, message: str) -> None:
         if ctx:
             await ctx.report_progress(progress=current, total=total, message=message)

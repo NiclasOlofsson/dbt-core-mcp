@@ -65,9 +65,9 @@ test_profile:
     return str(profiles_dir)
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session")
 async def jaffle_shop_server():
-    """Create a server instance with the jaffle_shop example project."""
+    """Create a server instance with the jaffle_shop example project (shared across all tests)."""
     from pathlib import Path
 
     from dbt_core_mcp.dependencies import set_server_state
@@ -83,7 +83,8 @@ async def jaffle_shop_server():
     # Set the server state for dependency injection in tools
     set_server_state(server.state)
 
-    # IMPORTANT: Disable persistent process for tests to avoid state contamination between tests
+    # IMPORTANT: Disable persistent process for tests to avoid asyncio event loop conflicts
+    # Pytest creates new event loops per test, causing "Future attached to different loop" errors
     if server.runner:
         server.runner.use_persistent_process = False
 

@@ -20,6 +20,7 @@ async def _implementation(
     ctx: Context | None,
     resource_type: str | None,
     state: DbtCoreServerContext,
+    force_parse: bool = True,
 ) -> list[dict[str, Any]]:
     """Implementation function for list_resources tool.
 
@@ -27,7 +28,7 @@ async def _implementation(
     The @tool() decorated list_resources() function calls this with injected dependencies.
     """
     # Initialize state if needed (metadata tool uses force_parse=True)
-    await state.ensure_initialized(ctx, force_parse=True)
+    await state.ensure_initialized(ctx, force_parse)
 
     # Return simplified manifest resources (LLM-friendly structure)
     return state.manifest.get_resources(resource_type)  # type: ignore

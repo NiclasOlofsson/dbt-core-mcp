@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dbt_core_mcp.tools.install_deps import _implementation as install_deps_impl
+from dbt_core_mcp.tools.install_deps import _implementation as install_deps_impl  # type: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer

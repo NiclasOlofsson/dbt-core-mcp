@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dbt_core_mcp.tools.run_models import _implementation as run_models_impl
-from dbt_core_mcp.tools.test_models import _implementation as impl_test_models
+from dbt_core_mcp.tools.run_models import _implementation as run_models_impl  # type: ignore[reportPrivateUsage]
+from dbt_core_mcp.tools.test_models import _implementation as impl_test_models  # type: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer

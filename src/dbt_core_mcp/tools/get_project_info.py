@@ -20,6 +20,7 @@ async def _implementation(
     ctx: Context | None,
     run_debug: bool,
     state: DbtCoreServerContext,
+    force_parse: bool = True,
 ) -> dict[str, Any]:
     """Implementation function for get_project_info tool.
 
@@ -27,7 +28,7 @@ async def _implementation(
     The @tool() decorated get_project_info() function calls this with injected dependencies.
     """
     # Initialize state if needed (metadata tool uses force_parse=True)
-    await state.ensure_initialized(ctx, force_parse=True)
+    await state.ensure_initialized(ctx, force_parse)
 
     try:
         # Collect manifest metadata for quick status check

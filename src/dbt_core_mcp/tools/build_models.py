@@ -32,6 +32,9 @@ async def _implementation(
     Separated for testing purposes - tests call this directly with explicit state.
     The @tool() decorated build_models() function calls this with injected dependencies.
     """
+    # Ensure dbt components are initialized
+    await state.ensure_initialized(ctx, force_parse=False)
+
     # Build selector (state-based preferred when available)
     selector = await state.prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
 

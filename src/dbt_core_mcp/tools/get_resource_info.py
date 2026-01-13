@@ -23,6 +23,7 @@ async def _implementation(
     include_database_schema: bool,
     include_compiled_sql: bool,
     state: DbtCoreServerContext,
+    force_parse: bool = True,
 ) -> dict[str, Any]:
     """Implementation function for get_resource_info tool.
 
@@ -30,7 +31,7 @@ async def _implementation(
     The @tool() decorated get_resource_info() function calls this with injected dependencies.
     """
     # Initialize state if needed (metadata tool uses force_parse=True)
-    await state.ensure_initialized(ctx, force_parse=True)
+    await state.ensure_initialized(ctx, force_parse)
 
     try:
         # Get resource info with manifest method (handles basic enrichment)

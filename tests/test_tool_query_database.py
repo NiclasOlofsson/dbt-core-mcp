@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from dbt_core_mcp.tools.query_database import _implementation as query_database_impl
+from dbt_core_mcp.tools.query_database import _implementation as query_database_impl  # type: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer

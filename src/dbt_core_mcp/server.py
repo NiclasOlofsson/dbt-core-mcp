@@ -22,7 +22,8 @@ from .context import DbtCoreServerContext
 from .dbt.bridge_runner import BridgeRunner
 from .dbt.manifest import ManifestLoader
 from .dependencies import set_server_state
-from .middleware import InitializationMiddleware
+
+# Import tools for static registration
 from .utils.env_detector import detect_python_command
 
 # Re-export DbtCoreServerContext for tools
@@ -84,8 +85,7 @@ class DbtCoreMcpServer:
             
             Single simple queries with known schema: Execute directly using the tools.
             """,
-            on_duplicate_resources="warn",
-            on_duplicate_prompts="replace",
+            on_duplicate="warn",
             include_fastmcp_meta=True,  # Include FastMCP metadata for clients
             providers=[provider],  # type: ignore[arg-type]
         )  # type: ignore[arg-type]
@@ -130,10 +130,7 @@ class DbtCoreMcpServer:
         # TimingMiddleware and LoggingMiddleware removed - they use structlog with column alignment
         # which causes formatting issues in VS Code's output panel
 
-        # Add initialization middleware to ensure dbt is initialized before any tool execution
-        self.app.add_middleware(InitializationMiddleware(self.state))
-
-        # Tools are auto-discovered via FileSystemProvider (no manual registration needed)
+        # Tools are auto-discovered via FileSystemProvider
 
         logger.info("dbt Core MCP Server initialized")
         logger.info(f"Profiles directory: {self.profiles_dir}")
@@ -232,20 +229,14 @@ class DbtCoreMcpServer:
         # Get runner (fresh or reused based on self.force_fresh_runner)
         runner = await self._get_runner()
 
-        # Parse if manifest missing OR force requested
-        should_parse = needs_parse or force_parse
-        if should_parse:
-            if not self.state.manifest_exists():
-                logger.info("No manifest found - running initial dbt parse...")
-            else:
-                logger.info("Force parse requested - running dbt parse for fresh data...")
+        # Run parse if needed and not skipped via force_parse=False
+        if needs_parse and force_parse:
+            logger.info("Running dbt parse...")
             parse_args = ["parse"]  # Use partial parse for efficiency
             result = await runner.invoke(parse_args)
             if not result.success:
                 error_msg = str(result.exception) if result.exception else "Unknown error"
                 raise RuntimeError(f"Failed to parse dbt project: {error_msg}")
-        else:
-            logger.info("Manifest exists and no force parse - tools will handle parsing as needed")
 
         # Initialize or reload manifest loader
         manifest_path = runner.get_manifest_path()

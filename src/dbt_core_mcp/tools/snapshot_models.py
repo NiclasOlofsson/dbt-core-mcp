@@ -27,6 +27,9 @@ async def _implementation(
     Separated for testing purposes - tests call this directly with explicit state.
     The @tool() decorated snapshot_models() function calls this with injected dependencies.
     """
+    # Ensure dbt components are initialized
+    await state.ensure_initialized(ctx, force_parse=False)
+
     # Construct dbt CLI args for snapshot
     args = ["snapshot"]
 

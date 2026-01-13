@@ -23,6 +23,7 @@ async def _implementation(
     direction: str,
     depth: int | None,
     state: DbtCoreServerContext,
+    force_parse: bool = True,
 ) -> dict[str, Any]:
     """Implementation function for get_lineage tool.
 
@@ -30,7 +31,7 @@ async def _implementation(
     The @tool() decorated get_lineage() function calls this with injected dependencies.
     """
     # Initialize state if needed (metadata tool uses force_parse=True)
-    await state.ensure_initialized(ctx, force_parse=True)
+    await state.ensure_initialized(ctx, force_parse)
 
     # Delegate to manifest helper for lineage traversal
     try:

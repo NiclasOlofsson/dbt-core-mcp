@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl
-from dbt_core_mcp.tools.run_models import _implementation as run_models_impl
+from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl  # type: ignore[reportPrivateUsage]
+from dbt_core_mcp.tools.run_models import _implementation as run_models_impl  # type: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="module")
 async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Jaffle shop server with seeds already loaded."""
+    """Jaffle shop server with seeds already loaded (shared across module tests)."""
     # Load seeds first since models depend on them
     await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
     return jaffle_shop_server

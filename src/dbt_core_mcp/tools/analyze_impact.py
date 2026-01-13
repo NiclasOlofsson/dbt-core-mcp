@@ -16,19 +16,14 @@ from ..dependencies import get_state
 logger = logging.getLogger(__name__)
 
 
-async def _implementation(
-    ctx: Context | None,
-    name: str,
-    resource_type: str | None,
-    state: DbtCoreServerContext,
-) -> dict[str, Any]:
+async def _implementation(ctx: Context | None, name: str, resource_type: str | None, state: DbtCoreServerContext, force_parse: bool = True) -> dict[str, Any]:
     """Implementation function for analyze_impact tool.
 
     Separated for testing purposes - tests call this directly with explicit state.
     The @tool() decorated analyze_impact() function calls this with injected dependencies.
     """
     # Initialize state if needed (metadata tool uses force_parse=True)
-    await state.ensure_initialized(ctx, force_parse=True)
+    await state.ensure_initialized(ctx, force_parse)
 
     # Delegate to manifest helper for downstream impact calculation
     try:
