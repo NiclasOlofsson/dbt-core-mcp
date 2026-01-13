@@ -29,26 +29,20 @@ Most dbt integrations require manual setup: specifying the Python interpreter pa
 
 **Solution:** We scan for environment markers and auto-detect the appropriate Python command:
 
-```python
-# Check project directory for environment indicators
-if Path("Pipfile").exists() and Path("Pipfile.lock").exists():
-    return ["pipenv", "run", "python"]
-
-if Path("poetry.lock").exists():
-    return ["poetry", "run", "python"]
-
-if Path("environment.yml").exists() or Path("conda.yaml").exists():
-    # Parse environment file for environment name
-    return ["conda", "run", "-n", env_name, "python"]
-
-if Path("venv/Scripts/python.exe").exists():  # Windows
-    return ["venv/Scripts/python.exe"]
-
-if Path("venv/bin/python").exists():  # Unix
-    return ["venv/bin/python"]
-
-# Fallback to system Python
-return ["python"]
+```
+DetectPythonEnvironment():
+  if Pipfile and Pipfile.lock exist:
+    return "pipenv run python"
+  if poetry.lock exists:
+    return "poetry run python"
+  if environment.yml or conda.yaml exists:
+    parse file for environment name
+    return "conda run -n <env_name> python"
+  if venv/Scripts/python.exe exists (Windows):
+    return "venv/Scripts/python.exe"
+  if venv/bin/python exists (Unix):
+    return "venv/bin/python"
+  return "python" (system fallback)
 ```
 
 **Result:** dbt runs in the exact environment the user configured for their project. No manual interpreter selection needed.
@@ -61,10 +55,11 @@ return ["python"]
 
 **Solution:** VS Code provides the workspace root automatically via MCP protocol:
 
-```python
-# MCP provides workspace context automatically
-roots = await ctx.list_roots()
-workspace_root = roots[0]  # Use first workspace folder
+```
+GetWorkspaceRoot(mcp_context):
+  workspace_roots = list_roots_from_mcp_context()
+  if workspace_roots not empty:
+    return workspace_roots[0]
 ```
 
 **Result:** Install the MCP server once globally, then open any dbt project folder in VS Code and the server automatically operates in that project's context. No per-project configuration needed. The only requirement is that the folder you open must contain `dbt_project.yml` at its root.
@@ -87,17 +82,16 @@ workspace_root = roots[0]  # Use first workspace folder
 
 **Solution:** Find and parse `profiles.yml` to get adapter information:
 
-```python
-# Find profiles.yml (project directory or ~/.dbt/)
-profiles_path = project_dir / "profiles.yml"
-if not profiles_path.exists():
-    profiles_path = Path.home() / ".dbt" / "profiles.yml"
-
-# Parse to get adapter type
-profiles = yaml.safe_load(profiles_path.read_text())
-profile_name = dbt_project["profile"]
-target = profiles[profile_name]["target"]
-adapter_type = profiles[profile_name]["outputs"][target]["type"]
+```
+DetectAdapterType():
+  profiles_path = project_dir/"profiles.yml"
+  if not exists(profiles_path):
+    profiles_path = home_dir/.dbt/"profiles.yml"
+  profiles = parse_yaml(profiles_path)
+  profile_name = dbt_project_config["profile"]
+  target_name = profiles[profile_name]["target"]
+  adapter_type = profiles[profile_name]["outputs"][target_name]["type"]
+  return adapter_type
 ```
 
 **Result:** We find profiles.yml wherever the user put it (project directory or ~/.dbt/) and immediately enable adapter-specific features like Databricks warehouse pre-warming with API credentials extracted directly from profiles.yml.
@@ -110,9 +104,10 @@ adapter_type = profiles[profile_name]["outputs"][target]["type"]
 
 **Solution:** Use the default target from profiles.yml:
 
-```python
-# We use whatever target is in profiles.yml
-target_name = profile.get("target", "default")
+```
+SelectTarget():
+  target_name = profile["target"] or "default"
+  return target_name
 ```
 
 **Design Philosophy:** 
@@ -126,21 +121,17 @@ If you need to switch targets occasionally, set `DBT_TARGET` environment variabl
 
 **Solution:** We validate everything on initialization, checking that the project exists (dbt_project.yml is present), profiles are configured (profiles.yml is found), dbt is installed in the detected Python environment, and the required adapter is available:
 
-```python
-async def _ensure_initialized():
-    if not dbt_project_yml.exists():
-        raise Error("No dbt_project.yml found in workspace")
-    
-    if not profiles_yml.exists():
-        raise Error(f"No profiles.yml found in {profiles_dir}")
-    
-    result = subprocess.run(python_cmd + ["-c", "import dbt"])
-    if result.returncode != 0:
-        raise Error(f"dbt not installed in detected environment")
-    
-    result = subprocess.run(python_cmd + ["-c", f"import dbt.adapters.{adapter}"])
-    if result.returncode != 0:
-        raise Error(f"Adapter dbt-{adapter} not installed")
+```
+ValidateSetup():
+  if not exists(dbt_project.yml):
+    error "No dbt_project.yml found in workspace"
+  if not exists(profiles.yml):
+    error "No profiles.yml found in <profiles_dir>"
+  if not can_import(python_env, "dbt"):
+    error "dbt not installed in detected environment"
+  if not can_import(python_env, "dbt.adapters.<adapter_name>"):
+    error "Adapter dbt-<adapter_name> not installed"
+  all checks passed
 ```
 
 **Result:** Clear errors like "dbt not installed in pipenv environment" instead of cryptic import failures.
@@ -185,11 +176,18 @@ The bridge architecture solves two critical problems from a different angle than
 - Doesn't respect project's dependency management (Pipfile.lock, poetry.lock, etc.)
 
 **Bridge Solution:** Launch dbt as a subprocess **in the project's own environment**. The MCP server detects the project's environment type and runs:
-```bash
-pipenv run python bridge.py    # For Pipfile projects
-poetry run python bridge.py    # For poetry projects
-conda run -n env python bridge.py    # For conda environments
-venv/bin/python bridge.py      # For venv projects
+```
+For Pipfile projects:
+  pipenv run python bridge.py
+
+For poetry projects:
+  poetry run python bridge.py
+
+For conda environments:
+  conda run -n <env_name> python bridge.py
+
+For venv projects:
+  venv/bin/python bridge.py
 ```
 
 This way, dbt runs with exactly the packages, versions, and configuration the user intended.
@@ -206,8 +204,15 @@ This way, dbt runs with exactly the packages, versions, and configuration the us
 
 This transforms the cost model:
 ```
-Traditional: 5s manifest load + 2s execute = 7s per operation (×10 = 70s)
-Bridge:      5s manifest load (once) + 2s execute per operation (×10 = 25s)
+Traditional approach:
+  First operation:  5s manifest load + 2s execute = 7s
+  Op 2-10 (each):   5s manifest load + 2s execute = 7s
+  Total (10 ops):   70s
+
+Bridge approach:
+  First operation:  5s manifest load + 2s execute = 7s
+  Op 2-10 (each):   0s load (in memory) + 2s execute = 2s
+  Total (10 ops):   25s (64% faster)
 ```
 
 This foundation makes all the performance optimizations in the next section possible and meaningful. Without persistent manifest loading, optimizing cache population or query execution would still leave you waiting 5 seconds reading manifest.json on every operation.
@@ -250,8 +255,8 @@ This foundation makes all the performance optimizations in the next section poss
 ### Bridge implementation
 
 **Key Files:**
-- `src/dbt_core_mcp/dbt/bridge.py`: Subprocess entry point, dbtRunner wrapper
-- `src/dbt_core_mcp/dbt/bridge_runner.py`: Process manager, IPC handler, progress parser
+- [bridge.py](src/dbt_core_mcp/dbt/bridge.py): Subprocess entry point, dbtRunner wrapper
+- [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py): Process manager, IPC handler, progress parser
 
 **Streaming Output:**
 The bridge streams dbt output in real-time, parsing progress indicators:
@@ -274,9 +279,12 @@ These optimizations were developed and tested on a production dbt project with 1
 When users run a simple query, they were experiencing 6-7 second execution times even though the actual SQL took less than 200ms. The missing time was being consumed by dbt's default behavior of querying information_schema upfront to cache metadata for all tables and views in the database. For a single query, this cache population is pure overhead that users have to wait through.
 
 **Solution:**
-Add `--no-populate-cache` to `dbt show` commands:
-```python
-args = ["show", "--inline", sql, "--no-populate-cache"]
+Add `--no-populate-cache` flag to `dbt show` commands:
+```
+ExecuteQuery(sql):
+  args = ["show", "--inline", sql, "--no-populate-cache"]
+  result = run_dbt(args)
+  return result
 ```
 
 **Results:**
@@ -295,10 +303,12 @@ args = ["show", "--inline", sql, "--no-populate-cache"]
 When running a single model with selection syntax like `dbt run -s bronze_d365__customerpackingslip`, users experienced a 3.2 second gap between concurrency setup and when the model actually started running. This time was consumed by information_schema queries even though dbt already knew which models to run. The issue is that dbt's default behavior caches metadata for all schemas in the database, scanning hundreds of tables that aren't relevant to the selected model.
 
 **Solution:**
-Add `--cache-selected-only` to selective runs:
-```python
-if cache_selected_only and (select or selector or select_state_modified):
+Add `--cache-selected-only` flag to selective runs:
+```
+BuildCommand(args):
+  if cache_selected_only is enabled AND (selection is active):
     args.append("--cache-selected-only")
+  return args
 ```
 
 Only caches schemas containing selected models.
@@ -348,14 +358,17 @@ Databricks serverless warehouses auto-suspend after inactivity. When dbt tries t
 
 **Solution:**
 Proactively check and start the warehouse before dbt operations:
-```python
-async def prewarm_warehouse():
-    # Query warehouse status via Databricks API
-    if state == "RUNNING":
-        return  # Already warm
-    
-    # Issue start command and poll until RUNNING (up to 5 minutes)
-    # Show progress to user while waiting
+```
+PreWarmDatabricksWarehouse():
+  warehouse_status = query_databricks_api(warehouse_id)
+  if status == "RUNNING":
+    return (already warm)
+  if status == "STOPPED":
+    report_progress("Starting warehouse...")
+    start_warehouse_via_api(warehouse_id)
+    poll until status == "RUNNING" (timeout: 5 minutes)
+    report_progress as we wait
+  return (warehouse ready)
 ```
 
 **Current Implementation:**
@@ -391,73 +404,161 @@ Speed isn't just convenience - it enables new interaction patterns. Fast enough 
 
 ## Safety mechanisms
 
-### 1. Concurrent process detection
+The dbt-core-mcp architecture implements multi-layered safety mechanisms to prevent data corruption, database connection conflicts, and race conditions. These layers protect against concurrent execution both within a single MCP server and across multiple MCP server instances.
 
-**Problem:** Multiple MCP operations running simultaneously could corrupt dbt state or database connections.
+### 1. Initialization synchronization
 
-**Solution:** In-memory asyncio lock with process validation
-```python
-# Lock held by another operation
-if self._process_lock.locked():
-    raise RuntimeError("Another dbt operation is in progress")
+**Problem:** Multiple MCP tool calls might attempt to initialize dbt components simultaneously (e.g., parsing the manifest, detecting adapters).
 
-# Acquire lock for this operation
-async with self._process_lock:
-    # Execute dbt command
-    result = await self._invoke_persistent(args)
+**Solution:** Async lock in SharedState prevents concurrent initialization
+```
+Initialize():
+  acquire initialization_lock
+    if project_dir not set:
+      detect workspace roots from MCP context
+    if manifest not loaded:
+      load manifest.json
+  release initialization_lock
 ```
 
 **Safety features:**
-- Uses `asyncio.Lock()` to serialize operations within MCP server process
-- Only one dbt command executes at a time
-- Prevents concurrent access to shared dbt process and database connections
-- Lock automatically released on operation completion (even on errors)
+- Lock is exclusive - only one tool initializes at a time
+- Prevents multiple concurrent manifest parsings
+- Prevents conflicting adapter detections
+- Lock automatically released after initialization completes (even on errors)
 
-### 2. Graceful process shutdown
+**Location:** [server.py](src/dbt_core_mcp/server.py)
 
-**Problem:** Killed processes leave orphaned database connections.
+### 2. Operation-level concurrency control (within MCP server)
 
-**Solution:** Signal handling and cleanup
-```python
-async def _stop_persistent_process():
-    # Send shutdown command via stdin
-    shutdown_msg = json.dumps({"shutdown": True})
-    process.stdin.write(shutdown_msg)
+**Problem:** Multiple MCP tool calls within the same server instance could execute dbt commands simultaneously on the shared persistent process, corrupting state.
+
+**Solution:** Operation lock in BridgeRunner serializes all dbt command execution
+```
+RunDbtCommand(args):
+  acquire operation_lock
+    if persistent_process is not running:
+      start persistent dbt process
+      load manifest.json (one-time cost)
     
-    # Wait for graceful exit (5s timeout)
-    await asyncio.wait_for(process.wait(), timeout=5.0)
-    
-    # Force kill if unresponsive
-    if process.returncode is None:
-        process.kill()
+    report_progress("Starting dbt command")
+    result = execute_on_persistent_process(args)
+  release operation_lock
+  return result
 ```
 
-**Cleanup includes:**
-- Database connection closure (via dbt adapter)
+**Safety features:**
+- Lock is exclusive - only one dbt command can execute at a time
+- Operations queue up on the lock - they don't fail, they wait their turn
+- Prevents concurrent access to shared dbt process state and database connections
+- Lock automatically released on operation completion (even on errors)
+- Progress callbacks report "Waiting for available process..." while queued
+
+**Location:** [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py)
+
+### 3. Cross-process detection (between dbt processes)
+
+**Problem:** Multiple dbt processes running on the same project cause conflicts: database locks, manifest corruption, state directory races. This can happen when: user opens same project in two VS Code windows (two MCP servers), runs dbt CLI commands manually while MCP is working, or CI jobs run simultaneously.
+
+**Solution:** Before each operation, detect and wait for external dbt processes
+```
+BeforeDbtOperation():
+  external_pid = our_persistent_process.pid
+  
+  if is_dbt_running_in_project(exclude_pid=external_pid):
+    report_progress("Waiting for another dbt process to finish...")
+    
+    if not wait_for_completion(timeout=10 seconds):
+      return error("dbt is already running in this project")
+  
+  proceed with dbt operation
+```
+
+**Smart process detection features:**
+- Scans all running processes to find dbt instances (uses system process API)
+- Ignores MCP's own persistent dbt processes (they don't interfere)
+- Only detects actual dbt CLI commands: `dbt run`, `dbt parse`, `dbt test`, etc.
+- Checks both working directory and command-line arguments to match the exact project
+- Robust error handling - if process scanning unavailable, assumes safe to proceed
+- Graceful degradation on permission errors (can't access some processes)
+
+**Wait-and-retry behavior:**
+- Waits up to 10 seconds for external dbt processes to finish (polls every 0.2s)
+- Reports progress to user: "Waiting for another dbt process to finish..."
+- Returns clear error if timeout occurs, instructing user to wait
+- Prevents silent failures from concurrent dbt execution
+
+**Location:** [process_check.py](src/dbt_core_mcp/utils/process_check.py) and invoked in [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py)
+
+### 4. Graceful process lifecycle management
+
+**Problem:** Abruptly killing the dbt process leaves database connections open, corrupts manifest state, and may trigger adapter cleanup failures.
+
+**Solution:** Graceful shutdown with signal handling and timeout fallback
+```
+StopDbtProcess():
+  signal process to shutdown gracefully
+    - process closes database connections
+    - process unloads manifest
+  
+  wait for process exit (5 second timeout):
+    if process exits gracefully:
+      confirm successful cleanup
+    else (timeout):
+      force kill process
+      log warning about forced termination
+```
+
+**Cleanup sequence:**
+- Database connection closure (via dbt adapter's cleanup)
+- Manifest unloading and state flushing
 - Process termination confirmation
 - Stdin/stdout stream cleanup
+- Automatic detection of stale processes (see below)
 
-### 3. Error recovery
+**Location:** [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py)
+
+### 5. Automatic error recovery
 
 **Stale Process Detection:**
-If bridge process crashes, next operation detects mismatch:
-```python
-if self._dbt_process and self._dbt_process.returncode is not None:
-    logger.warning("Process died, restarting...")
-    await self._start_persistent_process()
+If the persistent dbt process crashes, the next operation detects it:
+```
+BeforeDbtOperation():
+  if persistent_process exists and has exit code set:
+    log "Process died, discarding stale process"
+    persistent_process = None
+  
+  if no persistent_process:
+    start fresh process
+    load manifest.json
 ```
 
 **Timeout Protection:**
-Operations have configurable timeouts (default 300s):
-```python
-try:
-    await asyncio.wait_for(process.wait(), timeout=self.timeout)
-except asyncio.TimeoutError:
-    process.kill()
-    raise RuntimeError(f"Operation timed out after {self.timeout}s")
+Operations have configurable timeouts (default 300 seconds):
+```
+ExecuteCommand(args, timeout):
+  start_time = now
+  
+  while executing:
+    if (now - start_time) > timeout:
+      kill process
+      return error("dbt operation timed out")
+  
+  return result
 ```
 
-These mechanisms ensure reliable operation even in challenging scenarios.
+**Location:** [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py)
+
+### Safety summary
+
+| Layer | Scope | Mechanism | Prevents |
+|-------|-------|-----------|----------|
+| **Initialization** | Within MCP server | `asyncio.Lock()` | Concurrent manifest parsing, adapter detection conflicts |
+| **Operation** | Within MCP server | `asyncio.Lock()` + persistent process | Concurrent dbt command execution, shared process state corruption |
+| **Cross-process** | Across MCP servers & CLI | Process detection + wait | Multiple dbt processes on same project, database locks, manifest races |
+| **Recovery** | Process lifecycle | Graceful shutdown + stale detection | Orphaned connections, corrupt state, zombie processes |
+
+**Example scenario:** User has two VS Code windows open on the same dbt project. First window starts `dbt run`. Second window tries to run tests. The second window detects the first window's dbt process (via process detection), waits 10 seconds, then either succeeds when first completes or reports a clear error. No corruption, no silent failures, no deadlocks.
 
 ## Smart tools for natural language
 
@@ -465,24 +566,34 @@ One of the design goals for dbt-core-mcp is enabling natural language interactio
 
 ### Automatic state management
 
-**The Problem:** dbt's state-based selection (detecting modified models) requires users to manage state directories manually:
-```bash
-# Traditional approach - user must manage state
-dbt run --state path/to/previous/manifest --select state:modified+
-```
+**The Problem:** dbt's state-based selection (detecting modified models) requires users to manage state directories manually: `dbt run --state /path/to/manifest --select state:modified+`
 
 **Our Solution:** Automatic state tracking with zero configuration and intelligent change detection.
 
-**Smart Change Detection:** Before each operation, we check modification timestamps on project files (dbt_project.yml, models, sources, tests, macros) against the manifest. If files are newer than the manifest, we trigger a reparse. This ensures the manifest stays current without unnecessary reparsing on every operation.
+**Smart Change Detection:**
+```
+BeforeDbtOperation():
+  manifest_time = modification_time(target/manifest.json)
+  if any project file newer than manifest_time:
+    trigger "dbt parse" to refresh manifest
+  ensure manifest is current
+```
 
-**Automatic State Snapshots:** After every successful `run_models`, `build_models`, or `test_models` operation, we automatically copy the current manifest to `target/state_last_run/manifest.json`. When users request modified-only runs, we use this automatically:
+**Automatic State Snapshots:**
+```
+AfterSuccessfulOperation(operation_type):
+  if operation_type in ("run", "test", "build"):
+    copy target/manifest.json to target/state_last_run/manifest.json
+    (happens automatically, user doesn't configure it)
+```
 
-```python
-# User says: "run my changes"
-# We translate to: dbt run --select state:modified --state target/state_last_run
-
-# User says: "run my changes and downstream"  
-# We translate to: dbt run --select state:modified+ --state target/state_last_run
+**State-based selection for users:**
+```
+When user requests:
+  "run my changes" →
+    dbt run --select state:modified --state target/state_last_run
+  "run my changes and downstream" →
+    dbt run --select state:modified+ --state target/state_last_run
 ```
 
 **What This Enables:**
