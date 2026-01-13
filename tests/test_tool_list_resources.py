@@ -1,21 +1,94 @@
-"""
-Tests for list_resources tool.
-"""
+"""Tests for list_resources tool."""
 
-from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from dbt_core_mcp.context import DbtCoreServerContext
 from dbt_core_mcp.tools.list_resources import _implementation as list_resources_impl  # type: ignore[reportPrivateUsage]
 
-if TYPE_CHECKING:
-    from dbt_core_mcp.server import DbtCoreMcpServer
+
+@pytest.fixture
+def mock_state() -> Mock:
+    """Create a mock server state for testing."""
+    state = Mock(spec=DbtCoreServerContext)
+    state.ensure_initialized = AsyncMock()
+
+    # Mock manifest with get_resources method
+    mock_manifest = Mock()
+
+    def mock_get_resources(resource_type=None):
+        all_resources = [
+            {
+                "name": "customers",
+                "unique_id": "model.jaffle_shop.customers",
+                "resource_type": "model",
+                "package_name": "jaffle_shop",
+                "description": "Customer dimension",
+                "tags": ["mart"],
+            },
+            {
+                "name": "stg_customers",
+                "unique_id": "model.jaffle_shop.stg_customers",
+                "resource_type": "model",
+                "package_name": "jaffle_shop",
+                "description": "Staging customers",
+                "tags": ["staging"],
+            },
+            {
+                "name": "customers",
+                "unique_id": "source.jaffle_shop.jaffle_shop.customers",
+                "resource_type": "source",
+                "package_name": "jaffle_shop",
+                "description": "Raw customers source",
+                "tags": [],
+            },
+            {
+                "name": "orders",
+                "unique_id": "source.jaffle_shop.jaffle_shop.orders",
+                "resource_type": "source",
+                "package_name": "jaffle_shop",
+                "description": "Raw orders source",
+                "tags": [],
+            },
+            {
+                "name": "raw_customers",
+                "unique_id": "seed.jaffle_shop.raw_customers",
+                "resource_type": "seed",
+                "package_name": "jaffle_shop",
+                "description": "Raw customer seed data",
+                "tags": [],
+            },
+            {
+                "name": "raw_orders",
+                "unique_id": "seed.jaffle_shop.raw_orders",
+                "resource_type": "seed",
+                "package_name": "jaffle_shop",
+                "description": "Raw order seed data",
+                "tags": [],
+            },
+        ]
+
+        if resource_type is None:
+            return all_resources
+
+        # Validate resource type
+        valid_types = {"model", "source", "seed", "snapshot", "test", "analysis", "macro"}
+        if resource_type not in valid_types:
+            raise ValueError(f"Invalid resource_type: {resource_type}")
+
+        return [r for r in all_resources if r["resource_type"] == resource_type]
+
+    mock_manifest.get_resources = mock_get_resources
+    state.manifest = mock_manifest
+
+    return state
 
 
 @pytest.mark.asyncio
-async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_all(mock_state: Mock) -> None:
     """Test listing all resources without filter."""
-    result = await list_resources_impl(None, None, jaffle_shop_server.state, force_parse=False)
+    result = await list_resources_impl(None, None, mock_state, force_parse=False)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -27,9 +100,9 @@ async def test_list_resources_all(jaffle_shop_server: "DbtCoreMcpServer") -> Non
 
 
 @pytest.mark.asyncio
-async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_filter_models(mock_state: Mock) -> None:
     """Test filtering by model resource type."""
-    result = await list_resources_impl(None, "model", jaffle_shop_server.state, force_parse=False)
+    result = await list_resources_impl(None, "model", mock_state, force_parse=False)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -44,9 +117,9 @@ async def test_list_resources_filter_models(jaffle_shop_server: "DbtCoreMcpServe
 
 
 @pytest.mark.asyncio
-async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_filter_sources(mock_state: Mock) -> None:
     """Test filtering by source resource type."""
-    result = await list_resources_impl(None, "source", jaffle_shop_server.state, force_parse=False)
+    result = await list_resources_impl(None, "source", mock_state, force_parse=False)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -61,9 +134,9 @@ async def test_list_resources_filter_sources(jaffle_shop_server: "DbtCoreMcpServ
 
 
 @pytest.mark.asyncio
-async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_filter_seeds(mock_state: Mock) -> None:
     """Test filtering by seed resource type."""
-    result = await list_resources_impl(None, "seed", jaffle_shop_server.state, force_parse=False)
+    result = await list_resources_impl(None, "seed", mock_state, force_parse=False)
 
     assert isinstance(result, list)
     assert len(result) > 0
@@ -78,9 +151,9 @@ async def test_list_resources_filter_seeds(jaffle_shop_server: "DbtCoreMcpServer
 
 
 @pytest.mark.asyncio
-async def test_list_resources_consistent_structure(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_consistent_structure(mock_state: Mock) -> None:
     """Test that all resources have consistent structure."""
-    result = await list_resources_impl(None, None, jaffle_shop_server.state, force_parse=False)
+    result = await list_resources_impl(None, None, mock_state, force_parse=False)
 
     assert len(result) > 0
 
@@ -95,9 +168,7 @@ async def test_list_resources_consistent_structure(jaffle_shop_server: "DbtCoreM
 
 
 @pytest.mark.asyncio
-async def test_list_resources_invalid_type(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_list_resources_invalid_type(mock_state: Mock) -> None:
     """Test that invalid resource type raises ValueError."""
-    import pytest
-
     with pytest.raises(ValueError, match="Invalid resource_type"):
-        await list_resources_impl(None, "invalid_type", jaffle_shop_server.state, force_parse=False)
+        await list_resources_impl(None, "invalid_type", mock_state, force_parse=False)

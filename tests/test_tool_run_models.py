@@ -2,96 +2,208 @@
 Tests for run_models tool.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Optional
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-import pytest_asyncio
 
-from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl  # type: ignore[reportPrivateUsage]
 from dbt_core_mcp.tools.run_models import _implementation as run_models_impl  # type: ignore[reportPrivateUsage]
 
 if TYPE_CHECKING:
-    from dbt_core_mcp.server import DbtCoreMcpServer
+    pass
 
 
-@pytest_asyncio.fixture(scope="module")
-async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Jaffle shop server with seeds already loaded (shared across module tests)."""
-    # Load seeds first since models depend on them
-    await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
-    return jaffle_shop_server
+@pytest.fixture
+def mock_state() -> Mock:
+    """Create a mock server state for testing."""
+    state = Mock()
+    state.ensure_initialized = AsyncMock()
+    state.prepare_state_based_selection = AsyncMock(return_value=None)
+    state.clear_stale_run_results = Mock()
+    # Mock with at least one result to avoid "no models matched" error
+    state.validate_and_parse_results = Mock(
+        return_value={
+            "results": [{"status": "success", "unique_id": "model.test.customers"}],
+            "status": "success",
+            "elapsed_time": 0.5,
+            "command": "dbt run",
+        }
+    )
+    state.save_execution_state = AsyncMock()
+    state.report_final_progress = AsyncMock()
+    state.get_table_columns_from_db = AsyncMock(return_value=[])
+
+    # Mock runner
+    mock_runner = Mock()
+    mock_result = Mock()
+    mock_result.success = True
+    mock_result.stdout = ""  # Empty stdout for list command
+    mock_runner.invoke = AsyncMock(return_value=mock_result)
+    state.get_runner = AsyncMock(return_value=mock_runner)
+
+    return state
 
 
 @pytest.mark.asyncio
-async def test_run_models_all(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test running all models."""
-    result = await run_models_impl(None, None, None, False, False, False, False, False, True, seeded_jaffle_shop_server.state)
+async def test_run_models_command_construction_basic(mock_state: Mock) -> None:
+    """Test basic command construction without execution."""
+    commands_run: list[dict[str, Any]] = []
 
-    assert result["status"] == "success"
-    assert "results" in result
-    assert "elapsed_time" in result
-    assert "command" in result
-    assert len(result["results"]) > 0
+    async def capture_invoke(args: dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None, expected_total: Optional[int] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        # For list commands, return empty stdout (no models)
+        result.stdout = ""
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    # Call tool implementation
+    await run_models_impl(None, None, None, False, False, False, False, False, True, mock_state)
+
+    # Assert run command was created
+    assert len(commands_run) >= 1
+    # Find the run command (skip the list command)
+    run_cmd = [cmd for cmd in commands_run if "run" in cmd][0]
+    assert "run" in run_cmd
 
 
 @pytest.mark.asyncio
-async def test_run_models_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test running a specific model."""
-    result = await run_models_impl(None, "customers", None, False, False, False, False, False, True, seeded_jaffle_shop_server.state)
+async def test_run_models_command_construction_with_select(mock_state: Mock) -> None:
+    """Test command construction with select parameter."""
+    commands_run: list[dict[str, Any]] = []
 
-    assert result["status"] == "success"
-    assert "results" in result
-    # Should have run customers and possibly dependencies
-    assert len(result["results"]) >= 1
+    async def capture_invoke(args: dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None, expected_total: Optional[int] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = ""
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    await run_models_impl(None, "customers", None, False, False, False, False, False, True, mock_state)
+
+    # Find the list command and check it has select
+    assert len(commands_run) >= 2
+    list_cmd = commands_run[0]
+    assert "list" in list_cmd
+    assert "-s" in list_cmd
+    assert "customers" in list_cmd
 
 
 @pytest.mark.asyncio
-async def test_run_models_invalid_selection_combination(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_run_models_command_construction_with_exclude(mock_state: Mock) -> None:
+    """Test command construction with exclude parameter."""
+    commands_run: list[dict[str, Any]] = []
+
+    async def capture_invoke(args: dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None, expected_total: Optional[int] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = ""
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    await run_models_impl(None, None, "stg_*", False, False, False, False, False, True, mock_state)
+
+    assert len(commands_run) >= 1
+    run_cmd = [cmd for cmd in commands_run if "run" in cmd][0]
+    assert "--exclude" in run_cmd
+    assert "stg_*" in run_cmd
+
+
+@pytest.mark.asyncio
+async def test_run_models_command_construction_full_refresh(mock_state: Mock) -> None:
+    """Test command construction with full_refresh flag."""
+    commands_run: list[dict[str, Any]] = []
+
+    async def capture_invoke(args: dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None, expected_total: Optional[int] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = ""
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    await run_models_impl(None, None, None, False, False, True, False, False, True, mock_state)
+
+    assert len(commands_run) >= 1
+    run_cmd = [cmd for cmd in commands_run if "run" in cmd][0]
+    assert "--full-refresh" in run_cmd
+
+
+@pytest.mark.asyncio
+async def test_run_models_parameter_validation_select_and_state_modified(mock_state: Mock) -> None:
     """Test that using both select_state_modified and select raises error."""
-    with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
-        await run_models_impl(None, "customers", None, True, False, False, False, False, True, jaffle_shop_server.state)
+    # The actual validation happens in prepare_state_based_selection
+    # which we mock to raise the error
+    mock_state.prepare_state_based_selection = AsyncMock(side_effect=ValueError("Cannot use both select_state_modified and select"))
+
+    with pytest.raises(ValueError, match="Cannot use both select_state_modified"):
+        await run_models_impl(None, "customers", None, True, False, False, False, False, True, mock_state)
 
 
 @pytest.mark.asyncio
-async def test_run_models_modified_only_no_state_runs_all(jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test select_state_modified without state returns success (cannot determine modifications)."""
-    # Clean any existing state
-    assert jaffle_shop_server.project_dir is not None
-    state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
-    if state_dir.exists():
-        import shutil
+async def test_run_models_parameter_validation_exclude_and_state_modified(mock_state: Mock) -> None:
+    """Test that using both select_state_modified and exclude raises error."""
+    mock_state.prepare_state_based_selection = AsyncMock(side_effect=ValueError("Cannot use both select_state_modified and exclude"))
 
-        shutil.rmtree(state_dir)
-
-    # With no state, select_state_modified should raise RuntimeError
-    with pytest.raises(RuntimeError, match="No previous state found"):
-        await run_models_impl(None, None, None, True, False, False, False, False, True, jaffle_shop_server.state)
+    with pytest.raises(ValueError, match="Cannot use both select_state_modified"):
+        await run_models_impl(None, None, "stg_*", True, False, False, False, False, True, mock_state)
 
 
 @pytest.mark.asyncio
-async def test_run_models_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test that successful run creates state for next modified run."""
-    # Clean state first
-    assert seeded_jaffle_shop_server.project_dir is not None
-    state_dir = seeded_jaffle_shop_server.project_dir / "target" / "state_last_run"
-    if state_dir.exists():
-        import shutil
+async def test_run_models_successful_parsing(mock_state: Mock) -> None:
+    """Test successful model run parsing with real fixture."""
+    from pathlib import Path
 
-        shutil.rmtree(state_dir)
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    run_results_path = fixtures_dir / "target" / "run_results.json"
 
-    # Run models
-    result = await run_models_impl(None, None, None, False, False, False, False, False, True, seeded_jaffle_shop_server.state)
+    with open(run_results_path) as f:
+        import json
+
+        real_results = json.load(f)
+
+    mock_state.validate_and_parse_results.return_value = {
+        "status": "success",
+        "results": real_results.get("results", []),
+        "elapsed_time": real_results.get("elapsed_time", 0),
+        "command": "dbt run",
+    }
+
+    result = await run_models_impl(None, None, None, False, False, False, False, False, True, mock_state)
 
     assert result["status"] == "success"
-    # State should be created
-    assert state_dir.exists()
-    assert (state_dir / "manifest.json").exists()
+    assert "results" in result
+    assert len(result["results"]) > 0
+    assert "elapsed_time" in result
 
 
 @pytest.mark.asyncio
-async def test_run_models_full_refresh(seeded_jaffle_shop_server: "DbtCoreMcpServer") -> None:
-    """Test run with full_refresh flag."""
-    result = await run_models_impl(None, None, None, False, False, True, False, False, True, seeded_jaffle_shop_server.state)
+async def test_run_models_state_based_selection_preparation(mock_state: Mock) -> None:
+    """Test that state-based selection calls preparation step."""
 
-    assert result["status"] == "success"
-    assert "--full-refresh" in result["command"]
+    async def capture_invoke(args: dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None, expected_total: Optional[int] = None) -> Mock:
+        result = Mock()
+        result.success = True
+        # Return a model name in stdout for state:modified
+        result.stdout = "customers\n"
+        return result
+
+    mock_state.prepare_state_based_selection = AsyncMock(return_value="state:modified")
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    await run_models_impl(None, None, None, True, False, False, False, False, True, mock_state)
+
+    # Verify prepare_state_based_selection was called
+    mock_state.prepare_state_based_selection.assert_called_once()

@@ -1,21 +1,49 @@
-"""
-Tests for get_project_info tool.
-"""
+"""Tests for get_project_info tool."""
 
-from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from dbt_core_mcp.context import DbtCoreServerContext
 from dbt_core_mcp.tools.get_project_info import _implementation as get_project_info_impl  # type: ignore[reportPrivateUsage]
 
-if TYPE_CHECKING:
-    from dbt_core_mcp.server import DbtCoreMcpServer
+
+@pytest.fixture
+def mock_state() -> Mock:
+    """Create a mock server state for testing."""
+    state = Mock(spec=DbtCoreServerContext)
+    state.ensure_initialized = AsyncMock()
+    state.project_dir = "/path/to/jaffle_shop"
+    state.profiles_dir = "/path/to/profiles"
+
+    # Mock manifest with get_project_info method
+    mock_manifest = Mock()
+    mock_manifest.get_project_info = Mock(
+        return_value={
+            "project_name": "jaffle_shop",
+            "dbt_version": "1.7.0",
+            "adapter_type": "duckdb",
+            "model_count": 3,
+            "source_count": 2,
+        }
+    )
+    state.manifest = mock_manifest
+
+    # Mock runner for debug command
+    mock_runner = Mock()
+    mock_result = Mock()
+    mock_result.success = True
+    mock_result.stdout = "Connection test: [OK connection ok]"
+    mock_runner.invoke = AsyncMock(return_value=mock_result)
+    state.get_runner = AsyncMock(return_value=mock_runner)
+
+    return state
 
 
 @pytest.mark.asyncio
-async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_get_project_info_with_debug(mock_state: Mock) -> None:
     """Test get_project_info with dbt debug enabled (default)."""
-    result = await get_project_info_impl(None, True, jaffle_shop_server.state, force_parse=False)
+    result = await get_project_info_impl(None, True, mock_state, force_parse=False)
 
     # Basic project info
     assert result["project_name"] == "jaffle_shop"
@@ -33,9 +61,9 @@ async def test_get_project_info_with_debug(jaffle_shop_server: "DbtCoreMcpServer
 
 
 @pytest.mark.asyncio
-async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_get_project_info_without_debug(mock_state: Mock) -> None:
     """Test get_project_info without running dbt debug."""
-    result = await get_project_info_impl(None, False, jaffle_shop_server.state, force_parse=False)
+    result = await get_project_info_impl(None, False, mock_state, force_parse=False)
 
     # Basic project info should still be present
     assert result["project_name"] == "jaffle_shop"
@@ -49,9 +77,9 @@ async def test_get_project_info_without_debug(jaffle_shop_server: "DbtCoreMcpSer
 
 
 @pytest.mark.asyncio
-async def test_get_project_info_contains_metadata(jaffle_shop_server: "DbtCoreMcpServer") -> None:
+async def test_get_project_info_contains_metadata(mock_state: Mock) -> None:
     """Test get_project_info contains expected metadata fields."""
-    result = await get_project_info_impl(None, False, jaffle_shop_server.state, force_parse=False)
+    result = await get_project_info_impl(None, False, mock_state, force_parse=False)
 
     # Check for common metadata fields
     assert "project_name" in result

@@ -71,7 +71,10 @@ test_profile:
 
 @pytest_asyncio.fixture(scope="session")
 async def jaffle_shop_server() -> AsyncGenerator["DbtCoreMcpServer", None]:
-    """Create a server instance with the jaffle_shop example project (shared across all tests)."""
+    """Create a server instance with the jaffle_shop example project (shared across all tests).
+
+    Currently unused but kept for potential future integration tests.
+    """
     from pathlib import Path
 
     from dbt_core_mcp.dependencies import set_server_state

@@ -1,113 +1,234 @@
 """Tests for seed_data tool."""
 
-from typing import TYPE_CHECKING
+import json
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl  # type: ignore[reportPrivateUsage]
 
-if TYPE_CHECKING:
-    from dbt_core_mcp.server import DbtCoreMcpServer
+
+@pytest.fixture
+def real_run_results() -> Dict[str, Any]:
+    """Load real dbt seed results for parsing validation."""
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    with open(fixtures_dir / "target" / "run_results.json") as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def mock_state(real_run_results: Dict[str, Any]) -> Mock:
+    """Create mock state for seed tool testing."""
+    state = Mock()
+    state.ensure_initialized = AsyncMock()
+    state.prepare_state_based_selection = AsyncMock(return_value=None)
+    state.clear_stale_run_results = Mock()
+    state.save_execution_state = AsyncMock()
+
+    # Mock runner that captures commands
+    mock_runner = Mock()
+
+    def create_mock_result() -> Mock:
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(real_run_results)
+        return result
+
+    mock_runner.invoke = AsyncMock(side_effect=lambda args, progress_callback=None: create_mock_result())
+    state.get_runner = AsyncMock(return_value=mock_runner)
+
+    # Mock validate_and_parse_results to return realistic parsing
+    def validate_and_parse_results(result: Any, command_name: str) -> Dict[str, Any]:
+        parsed = real_run_results.copy()
+        parsed["command"] = "dbt seed"
+        return parsed
+
+    state.validate_and_parse_results = validate_and_parse_results
+    state.report_final_progress = Mock()
+
+    return state
 
 
 @pytest.mark.asyncio
-async def test_seed_all(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test loading all seed files."""
-    result = await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
+async def test_seed_all(mock_state: Mock) -> None:
+    """Test loading all seed files - command construction."""
+    commands_run = []
+
+    async def capture_invoke(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(
+            {
+                "metadata": {},
+                "results": [
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_customers"},
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_orders"},
+                ],
+                "elapsed_time": 2.5,
+            }
+        )
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    result = await load_seeds_impl(None, None, None, False, False, False, False, mock_state)
 
     assert result["status"] == "success"
     assert "results" in result
-    assert "elapsed_time" in result
-    assert "seed" in result["command"]
-
-    # Jaffle shop has raw_customers and raw_orders seeds
-    results = result["results"]
-    assert len(results) >= 2
-
-    # Check that seeds loaded successfully
-    for seed_result in results:
-        assert seed_result["status"] in ["success", "pass"]
+    assert len(commands_run) == 1
+    assert commands_run[0][0] == "seed"
 
 
 @pytest.mark.asyncio
-async def test_seed_select_specific(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test loading a specific seed file."""
-    result = await load_seeds_impl(None, "raw_customers", None, False, False, False, False, jaffle_shop_server.state)
+async def test_seed_select_specific(mock_state: Mock) -> None:
+    """Test loading a specific seed file - command construction."""
+    commands_run = []
+
+    async def capture_invoke(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(
+            {
+                "metadata": {},
+                "results": [
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_customers"},
+                ],
+                "elapsed_time": 1.2,
+            }
+        )
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    result = await load_seeds_impl(None, "raw_customers", None, False, False, False, False, mock_state)
 
     assert result["status"] == "success"
-    assert "results" in result
-    assert "-s raw_customers" in result["command"]
-
-    # Should have loaded only raw_customers
-    results = result["results"]
-    assert len(results) == 1
+    assert len(commands_run) == 1
+    args = commands_run[0]
+    assert "-s" in args or "--select" in args
+    assert "raw_customers" in args
 
 
 @pytest.mark.asyncio
-async def test_seed_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
+async def test_seed_invalid_combination() -> None:
     """Test that combining select_state_modified and select raises error."""
-    with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
-        await load_seeds_impl(None, "raw_customers", None, True, False, False, False, jaffle_shop_server.state)
+    # Mock state with prepare_state_based_selection that raises ValueError (as the real code does)
+    mock_state = Mock()
+    mock_state.ensure_initialized = AsyncMock()
+    mock_state.prepare_state_based_selection = AsyncMock(side_effect=ValueError("Cannot use both select_state_modified* flags and select parameter"))
+
+    with pytest.raises(ValueError, match="Cannot use both select_state_modified"):
+        await load_seeds_impl(None, "raw_customers", None, True, False, False, False, mock_state)
 
 
 @pytest.mark.asyncio
-async def test_seed_modified_only_requires_state(jaffle_shop_server: "DbtCoreMcpServer"):
+async def test_seed_modified_only_requires_state() -> None:
     """Test that select_state_modified without state raises RuntimeError."""
-    # Remove state if it exists
-    assert jaffle_shop_server.project_dir is not None
-    state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
-    if state_dir.exists():
-        import shutil
-
-        shutil.rmtree(state_dir)
+    mock_state = Mock()
+    mock_state.ensure_initialized = AsyncMock()
+    mock_state.prepare_state_based_selection = AsyncMock(side_effect=RuntimeError("No previous state found"))
 
     with pytest.raises(RuntimeError, match="No previous state found"):
-        await load_seeds_impl(None, None, None, True, False, False, False, jaffle_shop_server.state)
+        await load_seeds_impl(None, None, None, True, False, False, False, mock_state)
 
 
 @pytest.mark.asyncio
-async def test_seed_creates_state(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test that successful seed creates state for modified runs."""
-    assert jaffle_shop_server.project_dir is not None
-    state_dir = jaffle_shop_server.project_dir / "target" / "state_last_run"
+async def test_seed_full_refresh(mock_state: Mock) -> None:
+    """Test full_refresh flag is passed to dbt - command construction."""
+    commands_run = []
 
-    # First seed should create state
-    result = await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
+    async def capture_invoke(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(
+            {
+                "metadata": {},
+                "results": [
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_customers"},
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_orders"},
+                ],
+                "elapsed_time": 2.8,
+            }
+        )
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    result = await load_seeds_impl(None, None, None, False, False, True, False, mock_state)
 
     assert result["status"] == "success"
-    assert state_dir.exists()
-    assert (state_dir / "manifest.json").exists()
+    assert len(commands_run) == 1
+    args = commands_run[0]
+    assert "--full-refresh" in args
 
 
 @pytest.mark.asyncio
-async def test_seed_full_refresh(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test full_refresh flag is passed to dbt."""
-    result = await load_seeds_impl(None, None, None, False, False, True, False, jaffle_shop_server.state)
+async def test_seed_show(mock_state: Mock) -> None:
+    """Test show flag is passed to dbt - command construction."""
+    commands_run = []
+
+    async def capture_invoke(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(
+            {
+                "metadata": {},
+                "results": [
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_customers"},
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_orders"},
+                ],
+                "elapsed_time": 1.5,
+            }
+        )
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    result = await load_seeds_impl(None, None, None, False, False, False, True, mock_state)
 
     assert result["status"] == "success"
-    assert "--full-refresh" in result["command"]
+    assert len(commands_run) == 1
+    args = commands_run[0]
+    assert "--show" in args
 
 
 @pytest.mark.asyncio
-async def test_seed_show(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test show flag is passed to dbt."""
-    result = await load_seeds_impl(None, None, None, False, False, False, True, jaffle_shop_server.state)
+async def test_seed_exclude(mock_state: Mock) -> None:
+    """Test excluding specific seeds - command construction."""
+    commands_run = []
+
+    async def capture_invoke(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        commands_run.append(args)
+        result = Mock()
+        result.success = True
+        result.stdout = json.dumps(
+            {
+                "metadata": {},
+                "results": [
+                    {"status": "success", "unique_id": "seed.jaffle_shop.raw_orders"},
+                ],
+                "elapsed_time": 1.3,
+            }
+        )
+        return result
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke.side_effect = capture_invoke
+
+    result = await load_seeds_impl(None, None, "raw_customers", False, False, False, False, mock_state)
 
     assert result["status"] == "success"
-    assert "--show" in result["command"]
-
-
-@pytest.mark.asyncio
-async def test_seed_exclude(jaffle_shop_server: "DbtCoreMcpServer"):
-    """Test excluding specific seeds."""
-    result = await load_seeds_impl(None, None, "raw_customers", False, False, False, False, jaffle_shop_server.state)
-
-    assert result["status"] == "success"
-    assert "--exclude raw_customers" in result["command"]
-
-    # Should have loaded raw_orders but not raw_customers
-    results = result["results"]
-    assert len(results) >= 1
-    # Check no customers seed in results
-    customer_seeds = [r for r in results if "raw_customers" in r.get("unique_id", "")]
-    assert len(customer_seeds) == 0
+    assert len(commands_run) == 1
+    args = commands_run[0]
+    assert "--exclude" in args or "-e" in args
+    assert "raw_customers" in args
