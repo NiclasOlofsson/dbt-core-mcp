@@ -16,7 +16,6 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
-from fastmcp.server.providers import FileSystemProvider  # type: ignore[reportMissingImports]
 
 from .context import DbtCoreServerContext
 from .dbt.bridge_runner import BridgeRunner
@@ -50,9 +49,6 @@ class DbtCoreMcpServer:
         # FastMCP initialization with recommended arguments
         from . import __version__
 
-        tools_root = Path(__file__).parent / "tools"
-        provider = FileSystemProvider(root=tools_root)
-
         self.app = FastMCP(
             version=__version__,
             name="dbt Core MCP",
@@ -85,9 +81,7 @@ class DbtCoreMcpServer:
             
             Single simple queries with known schema: Execute directly using the tools.
             """,
-            on_duplicate="warn",
             include_fastmcp_meta=True,  # Include FastMCP metadata for clients
-            providers=[provider],  # type: ignore[arg-type]
         )  # type: ignore[arg-type]
 
         # Store the explicit project_dir if provided, otherwise will detect from workspace roots
@@ -130,7 +124,8 @@ class DbtCoreMcpServer:
         # TimingMiddleware and LoggingMiddleware removed - they use structlog with column alignment
         # which causes formatting issues in VS Code's output panel
 
-        # Tools are auto-discovered via FileSystemProvider
+        # Register tools statically
+        self._register_tools()
 
         logger.info("dbt Core MCP Server initialized")
         logger.info(f"Profiles directory: {self.profiles_dir}")
@@ -141,6 +136,25 @@ class DbtCoreMcpServer:
 
     async def get_runner(self) -> BridgeRunner:
         return await self._get_runner()
+
+    def _register_tools(self) -> None:
+        """Manually register all dbt Core MCP tools."""
+        # Import all tool modules
+        from .tools import analyze_impact, build_models, get_lineage, get_project_info, get_resource_info, install_deps, list_resources, load_seeds, query_database, run_models, snapshot_models, test_models
+
+        # Register each tool
+        self.app.tool()(analyze_impact.analyze_impact)
+        self.app.tool()(build_models.build_models)
+        self.app.tool()(get_lineage.get_lineage)
+        self.app.tool()(get_project_info.get_project_info)
+        self.app.tool()(get_resource_info.get_resource_info)
+        self.app.tool()(install_deps.install_deps)
+        self.app.tool()(list_resources.list_resources)
+        self.app.tool()(load_seeds.load_seeds)
+        self.app.tool()(query_database.query_database)
+        self.app.tool()(run_models.run_models)
+        self.app.tool()(snapshot_models.snapshot_models)
+        self.app.tool()(test_models.test_models)
 
     # (Removed) Legacy toolImpl_* wrappers: tools are now auto-discovered via FileSystemProvider
 

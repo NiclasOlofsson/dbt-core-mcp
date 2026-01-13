@@ -13,8 +13,8 @@ from typing import Any
 
 from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
-from fastmcp.tools import tool
 
+from . import dbtTool
 from ..context import DbtCoreServerContext
 from ..dependencies import get_state
 
@@ -162,7 +162,7 @@ async def _implementation(
         }
 
 
-@tool()
+@dbtTool()
 async def query_database(
     ctx: Context,
     sql: str,
