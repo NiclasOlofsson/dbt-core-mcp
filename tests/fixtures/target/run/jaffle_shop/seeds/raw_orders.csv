@@ -1,0 +1,11 @@
+
+    
+    
+    truncate table "jaffle_shop"."main"."raw_orders";
+    -- dbt seed --
+    
+          COPY "jaffle_shop"."main"."raw_orders" FROM 'C:\Development\github\dbt-core-mcp\examples\jaffle_shop\seeds\raw_orders.csv' (FORMAT CSV, HEADER TRUE, DELIMITER ',')
+        
+
+;
+  
