@@ -14,9 +14,9 @@ from typing import Any
 from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
 
-from . import dbtTool
 from ..context import DbtCoreServerContext
 from ..dependencies import get_state
+from . import dbtTool
 
 logger = logging.getLogger(__name__)
 

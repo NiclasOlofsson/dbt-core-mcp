@@ -12,9 +12,9 @@ from fastmcp.exceptions import McpError  # type: ignore[attr-defined]
 from fastmcp.server.context import Context
 from mcp.types import ErrorData
 
-from . import dbtTool
 from ..context import DbtCoreServerContext
 from ..dependencies import get_state
+from . import dbtTool
 
 logger = logging.getLogger(__name__)
 
