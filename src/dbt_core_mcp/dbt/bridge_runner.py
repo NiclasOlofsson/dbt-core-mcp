@@ -319,7 +319,7 @@ class BridgeRunner:
 
                 logger.info(f"Entering wait loop for PID {pid}")
 
-                async def wait_for_termination():
+                async def wait_for_termination() -> None:
                     while True:
                         try:
                             logger.info(f"Attempting to wait for process {pid} (timeout={poll_interval}s)...")
@@ -643,7 +643,7 @@ class BridgeRunner:
             except Exception as e:
                 logger.warning(f"Initial progress callback error: {e}")
 
-        async def read_stdout():
+        async def read_stdout() -> None:
             """Read and parse stdout line by line."""
             nonlocal line_count
             assert proc.stdout is not None
@@ -828,7 +828,7 @@ class BridgeRunner:
             except Exception as e:
                 logger.warning(f"stdout reader error: {e}")
 
-        async def read_stderr():
+        async def read_stderr() -> None:
             """Read stderr line by line."""
             assert proc.stderr is not None
             try:
@@ -1042,7 +1042,7 @@ class BridgeRunner:
         """Shutdown the bridge runner and clean up resources."""
         await self._stop_persistent_process()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup on garbage collection."""
         # Try to stop persistent process on cleanup
         if hasattr(self, "_dbt_process") and self._dbt_process and self._dbt_process.returncode is None:

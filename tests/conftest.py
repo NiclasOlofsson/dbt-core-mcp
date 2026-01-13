@@ -3,9 +3,13 @@ Pytest configuration and fixtures for dbt Core MCP tests.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING, AsyncGenerator
 
 import pytest
 import pytest_asyncio
+
+if TYPE_CHECKING:
+    from dbt_core_mcp.server import DbtCoreMcpServer
 
 
 @pytest.fixture
@@ -66,7 +70,7 @@ test_profile:
 
 
 @pytest_asyncio.fixture(scope="session")
-async def jaffle_shop_server():
+async def jaffle_shop_server() -> AsyncGenerator["DbtCoreMcpServer", None]:
     """Create a server instance with the jaffle_shop example project (shared across all tests)."""
     from pathlib import Path
 
