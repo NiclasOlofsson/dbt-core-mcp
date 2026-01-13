@@ -11,95 +11,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
+from fastmcp.tools import tool
 
-from ..server import DbtCoreServerContext
+from ..context import DbtCoreServerContext
+from ..dependencies import get_state
 
 logger = logging.getLogger(__name__)
-
-
-def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
-    """Register this tool with the MCP server.
-
-    Called automatically by server._register_tools() during initialization.
-
-    Args:
-        app: FastMCP instance
-        state: Shared state object accessible to all tools
-    """
-
-    @app.tool()
-    async def query_database(
-        ctx: Context,
-        sql: str,
-        output_file: str | None = None,
-        output_format: str = "json",
-    ) -> dict[str, Any]:
-        """Execute a SQL query against the dbt project's database.
-
-        This tool compiles and runs SQL with Jinja templating support, allowing you to use
-        {{ ref('model') }} and {{ source('src', 'table') }} in your queries.
-
-        **SQL Templating**:
-        - Use {{ ref('model_name') }} to reference dbt models
-        - Use {{ source('source_name', 'table_name') }} to reference source tables
-        - dbt compiles these to actual table names before execution
-
-        **Output Management**:
-        - For large result sets (>100 rows), use output_file to save results
-        - If output_file is omitted, all data returns inline (may consume large context)
-        - output_file is automatically created with parent directories
-
-        **Output Formats**:
-        - json (default): Returns data as JSON array of objects
-        - csv: Returns comma-separated values with header row
-        - tsv: Returns tab-separated values with header row
-        - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
-
-        Args:
-            sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
-                 For exploratory queries, include LIMIT. For aggregations/counts, omit it.
-            output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
-                        If provided, only metadata is returned (no preview for CSV/TSV).
-                        If omitted, all data is returned inline (may consume large context).
-            output_format: Output format - "json" (default), "csv", or "tsv"
-
-        Returns:
-            JSON inline: {"status": "success", "row_count": N, "rows": [...]}
-            JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
-            CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
-            CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
-
-        Raises:
-            RuntimeError: If query execution fails
-
-        Examples:
-            # Simple query with ref()
-            query_database(sql="SELECT * FROM {{ ref('customers') }} LIMIT 10")
-
-            # Query with source()
-            query_database(sql="SELECT * FROM {{ source('jaffle_shop', 'orders') }} LIMIT 5")
-
-            # Aggregation (no LIMIT needed)
-            query_database(sql="SELECT COUNT(*) as total FROM {{ ref('customers') }}")
-
-            # Save large results to file
-            query_database(
-                sql="SELECT * FROM {{ ref('orders') }}",
-                output_file="temp_auto/orders_export.json"
-            )
-
-            # Export as CSV
-            query_database(
-                sql="SELECT * FROM {{ ref('customers') }}",
-                output_file="temp_auto/customers.csv",
-                output_format="csv"
-            )
-        """
-        # Initialization handled by InitializationMiddleware
-        # Call implementation function (pure logic)
-        return await _implementation(ctx, sql, output_file, output_format, state)
 
 
 async def _implementation(
@@ -109,23 +28,11 @@ async def _implementation(
     output_format: str,
     state: DbtCoreServerContext,
 ) -> dict[str, Any]:
-    """Implementation logic - separated for testability.
+    """Implementation function for query_database tool.
 
-    Args:
-        ctx: MCP context for progress reporting
-        sql: SQL query with Jinja templating
-        output_file: Optional file path to save results
-        output_format: "json", "csv", or "tsv"
-        state: Shared state object
-
-    Returns:
-        Dictionary with query results or file metadata
-
-    Raises:
-        RuntimeError: If query execution fails
+    Separated for testing purposes - tests call this directly with explicit state.
+    The @tool() decorated query_database() function calls this with injected dependencies.
     """
-
-    # Define progress callback if context available
     async def progress_callback(current: int, total: int, message: str) -> None:
         if ctx:
             await ctx.report_progress(progress=current, total=total, message=message)
@@ -143,7 +50,7 @@ async def _implementation(
             full_error = result.stdout
         raise RuntimeError(f"Query execution failed: {full_error}")
 
-    # Parse JSON output from dbt show
+    # Parse JSON output from dbt show (extract the "show" payload)
     output = result.stdout if hasattr(result, "stdout") else ""
 
     try:
@@ -250,3 +157,76 @@ async def _implementation(
             "message": f"Failed to parse query results: {e}",
             "raw_output": output[:500],
         }
+
+
+@tool()
+async def query_database(
+    ctx: Context,
+    sql: str,
+    output_file: str | None = None,
+    output_format: str = "json",
+    state: DbtCoreServerContext = Depends(get_state),
+) -> dict[str, Any]:
+    """Execute a SQL query against the dbt project's database.
+
+    This tool compiles and runs SQL with Jinja templating support, allowing you to use
+    {{ ref('model') }} and {{ source('src', 'table') }} in your queries.
+
+    **SQL Templating**:
+    - Use {{ ref('model_name') }} to reference dbt models
+    - Use {{ source('source_name', 'table_name') }} to reference source tables
+    - dbt compiles these to actual table names before execution
+
+    **Output Management**:
+    - For large result sets (>100 rows), use output_file to save results
+    - If output_file is omitted, all data returns inline (may consume large context)
+    - output_file is automatically created with parent directories
+
+    **Output Formats**:
+    - json (default): Returns data as JSON array of objects
+    - csv: Returns comma-separated values with header row
+    - tsv: Returns tab-separated values with header row
+    - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
+
+    Args:
+        sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
+             For exploratory queries, include LIMIT. For aggregations/counts, omit it.
+        output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
+                    If provided, only metadata is returned (no preview for CSV/TSV).
+                    If omitted, all data is returned inline (may consume large context).
+        output_format: Output format - "json" (default), "csv", or "tsv"
+        state: Shared state object injected by FastMCP
+
+    Returns:
+        JSON inline: {"status": "success", "row_count": N, "rows": [...]}
+        JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
+        CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
+        CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
+
+    Raises:
+        RuntimeError: If query execution fails
+
+    Examples:
+        # Simple query with ref()
+        query_database(sql="SELECT * FROM {{ ref('customers') }} LIMIT 10")
+
+        # Query with source()
+        query_database(sql="SELECT * FROM {{ source('jaffle_shop', 'orders') }} LIMIT 5")
+
+        # Aggregation (no LIMIT needed)
+        query_database(sql="SELECT COUNT(*) as total FROM {{ ref('customers') }}")
+
+        # Save large results to file
+        query_database(
+            sql="SELECT * FROM {{ ref('orders') }}",
+            output_file="temp_auto/orders_export.json"
+        )
+
+        # Export as CSV
+        query_database(
+            sql="SELECT * FROM {{ ref('customers') }}",
+            output_file="temp_auto/customers.csv",
+            output_format="csv"
+        )
+    """
+    return await _implementation(ctx, sql, output_file, output_format, state)

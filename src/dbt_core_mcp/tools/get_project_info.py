@@ -6,68 +6,37 @@ This module implements the get_project_info tool for dbt Core MCP.
 import logging
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
+from fastmcp.tools import tool
 
-from ..server import DbtCoreServerContext
+from ..context import DbtCoreServerContext
+from ..dependencies import get_state
 
 logger = logging.getLogger(__name__)
 
 
-def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
-    """Register this tool with the MCP server.
-
-    Called automatically by server._register_tools() during initialization.
-
-    Args:
-        app: FastMCP instance
-        state: Shared state object accessible to all tools
-    """
-
-    @app.tool()
-    async def get_project_info(
-        ctx: Context,
-        run_debug: bool = True,
-    ) -> dict[str, Any]:
-        """Get information about the dbt project with optional diagnostics.
-
-        Args:
-            ctx: MCP context (provided by FastMCP)
-            run_debug: Run `dbt debug` to validate environment and test connection (default: True)
-
-        Returns:
-            Dictionary with project information and diagnostic results
-        """
-        # Initialize state if needed (metadata tool uses force_parse=True)
-        await state.ensure_initialized(ctx, force_parse=True)
-
-        # Call implementation function (pure logic)
-        return await _implementation(run_debug, state)
-
-
 async def _implementation(
+    ctx: Context | None,
     run_debug: bool,
     state: DbtCoreServerContext,
 ) -> dict[str, Any]:
-    """Implementation logic - separated for testability.
+    """Implementation function for get_project_info tool.
 
-    This is what gets unit tested - pure logic without MCP decorators.
-
-    Args:
-        run_debug: Whether to run dbt debug diagnostics
-        state: Shared state object
-
-    Returns:
-        Dictionary with project info and optional diagnostics
+    Separated for testing purposes - tests call this directly with explicit state.
+    The @tool() decorated get_project_info() function calls this with injected dependencies.
     """
+    # Initialize state if needed (metadata tool uses force_parse=True)
+    await state.ensure_initialized(ctx, force_parse=True)
+
     try:
-        # Get project info from manifest
+        # Collect manifest metadata for quick status check
         info = state.manifest.get_project_info()  # type: ignore
         info["project_dir"] = str(state.project_dir)
         info["profiles_dir"] = state.profiles_dir
         info["status"] = "ready"
 
-        # Run full dbt debug if requested (default behavior)
+        # Optionally run full dbt debug for connectivity diagnostics
         if run_debug:
             runner = await state.get_runner()
             debug_result_obj = await runner.invoke(["debug"])  # type: ignore
@@ -78,7 +47,7 @@ async def _implementation(
                 "output": debug_result_obj.stdout if debug_result_obj.stdout else "",
             }
 
-            # Parse the debug output
+            # Normalize debug output into structured diagnostics
             diagnostics: dict[str, Any] = {
                 "command_run": "dbt debug",
                 "success": debug_result.get("success", False),
@@ -100,3 +69,22 @@ async def _implementation(
 
     except Exception as e:
         raise ValueError(f"Failed to get project info: {e}")
+
+
+@tool()
+async def get_project_info(
+    ctx: Context,
+    run_debug: bool = True,
+    state: DbtCoreServerContext = Depends(get_state),
+) -> dict[str, Any]:
+    """Get information about the dbt project with optional diagnostics.
+
+    Args:
+        ctx: MCP context (provided by FastMCP)
+        run_debug: Run `dbt debug` to validate environment and test connection (default: True)
+        state: Shared state object injected by FastMCP
+
+    Returns:
+        Dictionary with project information and diagnostic results
+    """
+    return await _implementation(ctx, run_debug, state)

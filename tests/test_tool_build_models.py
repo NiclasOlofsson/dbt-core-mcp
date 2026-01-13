@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from dbt_core_mcp.tools.build_models import _implementation as build_models_impl
-from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds_impl
+from dbt_core_mcp.tools.build_models import _implementation as build_models
+from dbt_core_mcp.tools.load_seeds import _implementation as load_seeds
 
 if TYPE_CHECKING:
     from dbt_core_mcp.server import DbtCoreMcpServer
@@ -16,14 +16,33 @@ if TYPE_CHECKING:
 async def seeded_jaffle_shop_server(jaffle_shop_server: "DbtCoreMcpServer"):
     """Jaffle shop server with seeds already loaded."""
     # Load seeds first since build depends on them
-    await load_seeds_impl(None, None, None, False, False, False, False, jaffle_shop_server.state)
+    await load_seeds(
+        ctx=None,
+        select=None,
+        exclude=None,
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        show=False,
+        state=jaffle_shop_server.state,
+    )
     return jaffle_shop_server
 
 
 @pytest.mark.asyncio
 async def test_build_all_models(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test building all models (run + test in DAG order)."""
-    result = await build_models_impl(None, None, None, False, False, False, False, True, seeded_jaffle_shop_server.state)
+    result = await build_models(
+        ctx=None,
+        select=None,
+        exclude=None,
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        resource_types=None,
+        fail_fast=False,
+        state=seeded_jaffle_shop_server.state,
+    )
 
     assert result["status"] == "success"
     assert "results" in result
@@ -42,7 +61,17 @@ async def test_build_all_models(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_build_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test building a specific model."""
-    result = await build_models_impl(None, "customers", None, False, False, False, False, True, seeded_jaffle_shop_server.state)
+    result = await build_models(
+        ctx=None,
+        select="customers",
+        exclude=None,
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        resource_types=None,
+        fail_fast=False,
+        state=seeded_jaffle_shop_server.state,
+    )
 
     assert result["status"] == "success"
     assert "results" in result
@@ -53,7 +82,17 @@ async def test_build_select_specific(seeded_jaffle_shop_server: "DbtCoreMcpServe
 async def test_build_invalid_combination(jaffle_shop_server: "DbtCoreMcpServer"):
     """Test that combining select_state_modified and select raises error."""
     with pytest.raises(ValueError, match="Cannot use both select_state_modified\\* flags and select parameter"):
-        await build_models_impl(None, "customers", None, True, False, False, False, True, jaffle_shop_server.state)
+        await build_models(
+            ctx=None,
+            select="customers",
+            exclude=None,
+            select_state_modified=True,
+            select_state_modified_plus_downstream=False,
+            full_refresh=False,
+            resource_types=None,
+            fail_fast=False,
+            state=jaffle_shop_server.state,
+        )
 
 
 @pytest.mark.asyncio
@@ -69,7 +108,17 @@ async def test_build_modified_only_no_state_builds_all(jaffle_shop_server: "DbtC
 
     # With no state, select_state_modified should raise RuntimeError
     with pytest.raises(RuntimeError, match="No previous state found"):
-        await build_models_impl(None, None, None, True, False, False, False, True, jaffle_shop_server.state)
+        await build_models(
+            ctx=None,
+            select=None,
+            exclude=None,
+            select_state_modified=True,
+            select_state_modified_plus_downstream=False,
+            full_refresh=False,
+            resource_types=None,
+            fail_fast=False,
+            state=jaffle_shop_server.state,
+        )
 
 
 @pytest.mark.asyncio
@@ -79,7 +128,17 @@ async def test_build_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer"
     state_dir = seeded_jaffle_shop_server.project_dir / "target" / "state_last_run"
 
     # First build should create state
-    result = await build_models_impl(None, None, None, False, False, False, False, True, seeded_jaffle_shop_server.state)
+    result = await build_models(
+        ctx=None,
+        select=None,
+        exclude=None,
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        resource_types=None,
+        fail_fast=False,
+        state=seeded_jaffle_shop_server.state,
+    )
 
     assert result["status"] == "success"
     assert state_dir.exists()
@@ -89,7 +148,17 @@ async def test_build_creates_state(seeded_jaffle_shop_server: "DbtCoreMcpServer"
 @pytest.mark.asyncio
 async def test_build_fail_fast(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test fail_fast flag is passed to dbt."""
-    result = await build_models_impl(None, None, None, False, False, False, True, True, seeded_jaffle_shop_server.state)
+    result = await build_models(
+        ctx=None,
+        select=None,
+        exclude=None,
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        resource_types=None,
+        fail_fast=True,
+        state=seeded_jaffle_shop_server.state,
+    )
 
     assert result["status"] == "success"
     assert "--fail-fast" in result["command"]
@@ -98,7 +167,17 @@ async def test_build_fail_fast(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
 @pytest.mark.asyncio
 async def test_build_exclude(seeded_jaffle_shop_server: "DbtCoreMcpServer"):
     """Test excluding specific models."""
-    result = await build_models_impl(None, None, "customers", False, False, False, False, True, seeded_jaffle_shop_server.state)
+    result = await build_models(
+        ctx=None,
+        select=None,
+        exclude="customers",
+        select_state_modified=False,
+        select_state_modified_plus_downstream=False,
+        full_refresh=False,
+        resource_types=None,
+        fail_fast=False,
+        state=seeded_jaffle_shop_server.state,
+    )
 
     assert result["status"] == "success"
     assert "--exclude customers" in result["command"]

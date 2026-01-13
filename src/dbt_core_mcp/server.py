@@ -5,11 +5,10 @@ This server provides tools for interacting with dbt projects via the Model Conte
 """
 
 import asyncio
-import importlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 from urllib.parse import unquote
 from urllib.request import url2pathname
 
@@ -17,18 +16,17 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
+from fastmcp.server.providers import FileSystemProvider  # type: ignore[reportMissingImports]
 
 from .context import DbtCoreServerContext
 from .dbt.bridge_runner import BridgeRunner
 from .dbt.manifest import ManifestLoader
+from .dependencies import set_server_state
 from .middleware import InitializationMiddleware
 from .utils.env_detector import detect_python_command
 
 # Re-export DbtCoreServerContext for tools
 __all__ = ["DbtCoreServerContext", "DbtCoreMcpServer", "create_server"]
-
-# Type alias for progress reporting callbacks
-ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +48,9 @@ class DbtCoreMcpServer:
         """
         # FastMCP initialization with recommended arguments
         from . import __version__
+
+        tools_root = Path(__file__).parent / "tools"
+        provider = FileSystemProvider(root=tools_root)
 
         self.app = FastMCP(
             version=__version__,
@@ -86,7 +87,8 @@ class DbtCoreMcpServer:
             on_duplicate_resources="warn",
             on_duplicate_prompts="replace",
             include_fastmcp_meta=True,  # Include FastMCP metadata for clients
-        )
+            providers=[provider],  # type: ignore[arg-type]
+        )  # type: ignore[arg-type]
 
         # Store the explicit project_dir if provided, otherwise will detect from workspace roots
         _explicit_project_dir = Path(project_dir) if project_dir else None
@@ -109,6 +111,7 @@ class DbtCoreMcpServer:
 
         # Set back-reference for delegation
         self.state.server = self
+        set_server_state(self.state)
 
         # Keep references for backward compatibility with existing helper methods
         self.project_dir = project_dir_resolved
@@ -130,8 +133,7 @@ class DbtCoreMcpServer:
         # Add initialization middleware to ensure dbt is initialized before any tool execution
         self.app.add_middleware(InitializationMiddleware(self.state))
 
-        # Register tools via auto-discovery
-        self._register_tools()
+        # Tools are auto-discovered via FileSystemProvider (no manual registration needed)
 
         logger.info("dbt Core MCP Server initialized")
         logger.info(f"Profiles directory: {self.profiles_dir}")
@@ -143,47 +145,7 @@ class DbtCoreMcpServer:
     async def get_runner(self) -> BridgeRunner:
         return await self._get_runner()
 
-    # (Removed) Legacy toolImpl_* wrappers: tests now call tool implementations directly
-
-    def _register_tools(self) -> None:
-        """Auto-discover and register all tools from tools/ directory.
-
-        Scans tools/ for .py files, imports them, and calls their setup() function.
-        Errors in tool loading don't crash server startup.
-        """
-        tools_dir = Path(__file__).parent / "tools"
-
-        if not tools_dir.exists():
-            logger.warning(f"Tools directory not found: {tools_dir}")
-            return
-
-        # Find all .py files in tools/ (excluding __init__.py and __pycache__)
-        tool_files = sorted(tools_dir.glob("*.py"))
-
-        if not tool_files:
-            logger.warning(f"No tool files found in {tools_dir}")
-            return
-
-        for tool_file in tool_files:
-            if tool_file.name.startswith("_"):
-                continue
-
-            # Dynamically import the module
-            module_name = f"dbt_core_mcp.tools.{tool_file.stem}"
-            try:
-                module = importlib.import_module(module_name)
-
-                # Look for setup() function
-                if hasattr(module, "setup") and callable(module.setup):
-                    # Call setup - it registers the tool with FastMCP
-                    module.setup(self.app, self.state)
-                    logger.info(f"Registered tool from {tool_file.name}")
-                else:
-                    logger.warning(f"No setup() function found in {module_name}")
-            except Exception as e:
-                logger.error(f"Failed to load tool from {tool_file.name}: {e}")
-                # Don't fail server startup if a tool fails to load
-                continue
+    # (Removed) Legacy toolImpl_* wrappers: tools are now auto-discovered via FileSystemProvider
 
     def _detect_project_dir(self) -> Path:
         """Detect the dbt project directory.

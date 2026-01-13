@@ -70,6 +70,7 @@ async def jaffle_shop_server():
     """Create a server instance with the jaffle_shop example project."""
     from pathlib import Path
 
+    from dbt_core_mcp.dependencies import set_server_state
     from dbt_core_mcp.server import create_server
 
     # Use the example jaffle_shop project
@@ -78,6 +79,9 @@ async def jaffle_shop_server():
 
     # Initialize with a mock context (no workspace roots for tests)
     await server._ensure_initialized_with_context(None)  # pyright: ignore[reportPrivateUsage]
+
+    # Set the server state for dependency injection in tools
+    set_server_state(server.state)
 
     # IMPORTANT: Disable persistent process for tests to avoid state contamination between tests
     if server.runner:

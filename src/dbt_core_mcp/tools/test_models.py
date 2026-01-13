@@ -7,99 +7,16 @@ import json
 import logging
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.exceptions import McpError  # type: ignore[attr-defined]
 from fastmcp.server.context import Context
+from fastmcp.tools import tool
 from mcp.types import ErrorData
 
-from ..server import DbtCoreServerContext
+from ..context import DbtCoreServerContext
+from ..dependencies import get_state
 
 logger = logging.getLogger(__name__)
-
-
-def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
-    """Register this tool with the MCP server.
-
-    Called automatically by server._register_tools() during initialization.
-
-    Args:
-        app: FastMCP instance
-        state: Shared state object accessible to all tools
-    """
-
-    @app.tool()
-    async def test_models(
-        ctx: Context,
-        select: str | None = None,
-        exclude: str | None = None,
-        select_state_modified: bool = False,
-        select_state_modified_plus_downstream: bool = False,
-        fail_fast: bool = False,
-    ) -> dict[str, Any]:
-        """Run dbt tests on models and sources.
-
-        **When to use**: After running models to validate data quality. Tests check constraints
-        like uniqueness, not-null, relationships, and custom data quality rules.
-
-        **Important**: Ensure seeds and models are built before running tests that depend on them.
-
-        State-based selection modes (uses dbt state:modified selector):
-        - select_state_modified: Test only models modified since last successful run (state:modified)
-        - select_state_modified_plus_downstream: Test modified + downstream dependencies (state:modified+)
-          Note: Requires select_state_modified=True
-
-        Manual selection (alternative to state-based):
-        - select: dbt selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
-        - exclude: Exclude specific tests
-
-        Args:
-            select: Manual selector for tests/models to test
-            exclude: Exclude selector
-            select_state_modified: Use state:modified selector (changed models only)
-            select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
-            fail_fast: Stop execution on first failure
-
-        Returns:
-            Test results with status and failures
-
-        See also:
-            - run_models(): Execute models before testing them
-            - build_models(): Run models + tests together automatically
-            - load_seeds(): Load seeds if tests reference seed data
-
-        Examples:
-            # After building a model, test it
-            run_models(select="customers")
-            test_models(select="customers")
-
-            # Test only generic tests (not singular)
-            test_models(select="test_type:generic")
-
-            # Test everything that changed
-            test_models(select_state_modified=True)
-
-            # Stop on first failure for quick feedback
-            test_models(fail_fast=True)
-
-        Note: Unit test failures show diffs in the "daff" tabular format:
-            @@ = column headers
-            +++ = row in actual, not in expected (extra row)
-            --- = row in expected, not in actual (missing row)
-            → = row with modified cell(s), shown as old_value→new_value
-            ... = omitted matching rows
-            Full format spec: https://paulfitz.github.io/daff-doc/spec.html
-        """
-        # Initialization handled by InitializationMiddleware
-        # Call implementation function (pure logic)
-        return await _implementation(
-            ctx,
-            select,
-            exclude,
-            select_state_modified,
-            select_state_modified_plus_downstream,
-            fail_fast,
-            state,
-        )
 
 
 async def _implementation(
@@ -111,33 +28,18 @@ async def _implementation(
     fail_fast: bool,
     state: DbtCoreServerContext,
 ) -> dict[str, Any]:
-    """Implementation logic - separated for testability.
+    """Implementation function for test_models tool.
 
-    Args:
-        ctx: MCP context for progress reporting
-        select: Manual selector
-        exclude: Exclude selector
-        select_state_modified: Use state-based modified selector
-        select_state_modified_plus_downstream: Extend to modified+
-        fail_fast: Stop on first failure
-        state: Shared state object
-
-    Returns:
-        Dictionary with test results
-
-    Raises:
-        McpError: If any tests fail (business failure)
-        RuntimeError: If no tests matched selector
+    Separated for testing purposes - tests call this directly with explicit state.
+    The @tool() decorated test_models() function calls this with injected dependencies.
     """
-
-    # Prepare state-based selection (validates and returns selector)
+    # Build state-based selector if requested (avoids redundant parsing when possible)
     selector = await state.prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)
 
-    # Early return if state-based requested but no state exists
+    # If user asked for state:modified but no baseline exists, fail fast with clear guidance
     if select_state_modified and not selector:
         raise RuntimeError("No previous state found - cannot determine modifications. Run 'dbt run' or 'dbt build' first to create baseline state.")
 
-    # Build command args
     args = ["test"]
 
     # Add selector if we have one (state-based or manual)
@@ -233,3 +135,70 @@ async def _implementation(
         "results": results_list,
         "elapsed_time": run_results.get("elapsed_time"),
     }
+
+
+@tool()
+async def test_models(
+    ctx: Context,
+    select: str | None = None,
+    exclude: str | None = None,
+    select_state_modified: bool = False,
+    select_state_modified_plus_downstream: bool = False,
+    fail_fast: bool = False,
+    state: DbtCoreServerContext = Depends(get_state),
+) -> dict[str, Any]:
+    """Run dbt tests on models and sources.
+
+    **When to use**: After running models to validate data quality. Tests check constraints
+    like uniqueness, not-null, relationships, and custom data quality rules.
+
+    **Important**: Ensure seeds and models are built before running tests that depend on them.
+
+    State-based selection modes (uses dbt state:modified selector):
+    - select_state_modified: Test only models modified since last successful run (state:modified)
+    - select_state_modified_plus_downstream: Test modified + downstream dependencies (state:modified+)
+      Note: Requires select_state_modified=True
+
+    Manual selection (alternative to state-based):
+    - select: dbt selector syntax (e.g., "customers", "tag:mart", "test_type:generic")
+    - exclude: Exclude specific tests
+
+    Args:
+        select: Manual selector for tests/models to test
+        exclude: Exclude selector
+        select_state_modified: Use state:modified selector (changed models only)
+        select_state_modified_plus_downstream: Extend to state:modified+ (changed + downstream)
+        fail_fast: Stop execution on first failure
+        state: Shared state object injected by FastMCP
+
+    Returns:
+        Test results with status and failures
+
+    See also:
+        - run_models(): Execute models before testing them
+        - build_models(): Run models + tests together automatically
+        - load_seeds(): Load seeds if tests reference seed data
+
+    Examples:
+        # After building a model, test it
+        run_models(select="customers")
+        test_models(select="customers")
+
+        # Test only generic tests (not singular)
+        test_models(select="test_type:generic")
+
+        # Test everything that changed
+        test_models(select_state_modified=True)
+
+        # Stop on first failure for quick feedback
+        test_models(fail_fast=True)
+
+    Note: Unit test failures show diffs in the "daff" tabular format:
+        @@ = column headers
+        +++ = row in actual, not in expected (extra row)
+        --- = row in expected, not in actual (missing row)
+        → = row with modified cell(s), shown as old_value→new_value
+        ... = omitted matching rows
+        Full format spec: https://paulfitz.github.io/daff-doc/spec.html
+    """
+    return await _implementation(ctx, select, exclude, select_state_modified, select_state_modified_plus_downstream, fail_fast, state)

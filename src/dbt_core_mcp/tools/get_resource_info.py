@@ -6,89 +6,32 @@ This module implements the get_resource_info tool for dbt Core MCP.
 import logging
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
+from fastmcp.tools import tool
 
-from ..server import DbtCoreServerContext
+from ..context import DbtCoreServerContext
+from ..dependencies import get_state
 
 logger = logging.getLogger(__name__)
 
 
-def setup(app: FastMCP, state: DbtCoreServerContext) -> None:
-    """Register this tool with the MCP server.
-
-    Called automatically by server._register_tools() during initialization.
-
-    Args:
-        app: FastMCP instance
-        state: Shared state object accessible to all tools
-    """
-
-    @app.tool()
-    async def get_resource_info(
-        ctx: Context,
-        name: str,
-        resource_type: str | None = None,
-        include_database_schema: bool = True,
-        include_compiled_sql: bool = True,
-    ) -> dict[str, Any]:
-        """Get detailed information about any dbt resource (model, source, seed, snapshot, test, etc.).
-
-        This unified tool works across all resource types, auto-detecting the resource or filtering by type.
-        Designed for LLM consumption - returns complete data even when multiple matches exist.
-
-        Args:
-            name: Resource name. For sources, use "source_name.table_name" or just "table_name"
-            resource_type: Optional filter to narrow search:
-                - "model": Data transformation models
-                - "source": External data sources
-                - "seed": CSV reference data files
-                - "snapshot": SCD Type 2 historical tables
-                - "test": Data quality tests
-                - "analysis": Ad-hoc analysis queries
-                - None: Auto-detect (searches all types)
-            include_database_schema: If True (default), query actual database table schema
-                for models/seeds/snapshots/sources and add as 'database_columns' field
-            include_compiled_sql: If True (default), include compiled SQL with Jinja resolved
-                ({{ ref() }}, {{ source() }} → actual table names). Only applicable to models.
-                Will trigger dbt compile if not already compiled. Set to False to skip compilation.
-
-        Returns:
-            Resource information dictionary. If multiple matches found, returns:
-            {"multiple_matches": True, "matches": [...], "message": "..."}
-
-        Raises:
-            ValueError: If resource not found
-        """
-        # Initialize state if needed (metadata tool uses force_parse=True)
-        await state.ensure_initialized(ctx, force_parse=True)
-
-        # Call implementation function (pure logic)
-        return await _implementation(name, resource_type, include_database_schema, include_compiled_sql, state)
-
-
 async def _implementation(
+    ctx: Context | None,
     name: str,
     resource_type: str | None,
     include_database_schema: bool,
     include_compiled_sql: bool,
     state: DbtCoreServerContext,
 ) -> dict[str, Any]:
-    """Implementation logic - separated for testability.
+    """Implementation function for get_resource_info tool.
 
-    Args:
-        name: Resource name to retrieve
-        resource_type: Optional filter by resource type
-        include_database_schema: Whether to query actual database schema
-        include_compiled_sql: Whether to include compiled SQL (triggers compile if needed)
-        state: Shared state object
-
-    Returns:
-        Dictionary with resource information
-
-    Raises:
-        ValueError: If resource not found
+    Separated for testing purposes - tests call this directly with explicit state.
+    The @tool() decorated get_resource_info() function calls this with injected dependencies.
     """
+    # Initialize state if needed (metadata tool uses force_parse=True)
+    await state.ensure_initialized(ctx, force_parse=True)
+
     try:
         # Get resource info with manifest method (handles basic enrichment)
         result = state.manifest.get_resource_info(  # type: ignore
@@ -134,7 +77,7 @@ async def _implementation(
                         include_compiled_sql=True,
                     )
 
-        # Query database schema for applicable resource types
+        # Query database schema for applicable resource types (ref/source aware)
         if include_database_schema and node_type in ("model", "seed", "snapshot", "source"):
             resource_name = result.get("name", name)
             # For sources, pass source_name to use source() instead of ref()
@@ -147,3 +90,44 @@ async def _implementation(
 
     except ValueError as e:
         raise ValueError(f"Resource not found: {e}")
+
+
+@tool()
+async def get_resource_info(
+    ctx: Context,
+    name: str,
+    resource_type: str | None = None,
+    include_database_schema: bool = True,
+    include_compiled_sql: bool = True,
+    state: DbtCoreServerContext = Depends(get_state),
+) -> dict[str, Any]:
+    """Get detailed information about any dbt resource (model, source, seed, snapshot, test, etc.).
+
+    This unified tool works across all resource types, auto-detecting the resource or filtering by type.
+    Designed for LLM consumption - returns complete data even when multiple matches exist.
+
+    Args:
+        name: Resource name. For sources, use "source_name.table_name" or just "table_name"
+        resource_type: Optional filter to narrow search:
+            - "model": Data transformation models
+            - "source": External data sources
+            - "seed": CSV reference data files
+            - "snapshot": SCD Type 2 historical tables
+            - "test": Data quality tests
+            - "analysis": Ad-hoc analysis queries
+            - None: Auto-detect (searches all types)
+        include_database_schema: If True (default), query actual database table schema
+            for models/seeds/snapshots/sources and add as 'database_columns' field
+        include_compiled_sql: If True (default), include compiled SQL with Jinja resolved
+            ({{ ref() }}, {{ source() }} → actual table names). Only applicable to models.
+            Will trigger dbt compile if not already compiled. Set to False to skip compilation.
+        state: Shared state object injected by FastMCP
+
+    Returns:
+        Resource information dictionary. If multiple matches found, returns:
+        {"multiple_matches": True, "matches": [...], "message": "..."}
+
+    Raises:
+        ValueError: If resource not found
+    """
+    return await _implementation(ctx, name, resource_type, include_database_schema, include_compiled_sql, state)

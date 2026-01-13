@@ -29,7 +29,7 @@ classifiers = [
 
 dependencies = [
     "mcp>=1.12.0",
-    "fastmcp>=2.11.0",
+    "fastmcp @ git+https://github.com/jlowin/fastmcp.git@main",
     "pydantic>=2.0.0",
     "typing-extensions",
     "psutil>=5.9.0",
@@ -49,6 +49,9 @@ dbt-core-mcp = "dbt_core_mcp.__main__:main"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/**", "README.md", "LICENSE"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dbt_core_mcp"]

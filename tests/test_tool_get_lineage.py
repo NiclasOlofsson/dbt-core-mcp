@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 @pytest.mark.asyncio
 async def test_get_lineage_model_both_directions(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage for a model in both directions."""
-    result = await get_lineage_impl("customers", "model", "both", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "customers", "model", "both", None, jaffle_shop_server.state)
 
     assert result["resource"]["name"] == "customers"
     assert result["resource"]["resource_type"] == "model"
@@ -30,7 +30,7 @@ async def test_get_lineage_model_both_directions(jaffle_shop_server: "DbtCoreMcp
 @pytest.mark.asyncio
 async def test_get_lineage_upstream_only(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage with upstream direction only."""
-    result = await get_lineage_impl("customers", "model", "upstream", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "customers", "model", "upstream", None, jaffle_shop_server.state)
 
     assert result["resource"]["name"] == "customers"
     assert "upstream" in result
@@ -42,7 +42,7 @@ async def test_get_lineage_upstream_only(jaffle_shop_server: "DbtCoreMcpServer")
 @pytest.mark.asyncio
 async def test_get_lineage_downstream_only(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage with downstream direction only."""
-    result = await get_lineage_impl("stg_customers", "model", "downstream", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "stg_customers", "model", "downstream", None, jaffle_shop_server.state)
 
     assert result["resource"]["name"] == "stg_customers"
     assert "upstream" not in result
@@ -53,7 +53,7 @@ async def test_get_lineage_downstream_only(jaffle_shop_server: "DbtCoreMcpServer
 @pytest.mark.asyncio
 async def test_get_lineage_with_depth_limit(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage with depth limit."""
-    result = await get_lineage_impl("customers", "model", "upstream", 1, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "customers", "model", "upstream", 1, jaffle_shop_server.state)
 
     assert result["resource"]["name"] == "customers"
     assert "upstream" in result
@@ -66,7 +66,7 @@ async def test_get_lineage_with_depth_limit(jaffle_shop_server: "DbtCoreMcpServe
 @pytest.mark.asyncio
 async def test_get_lineage_source(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage for a source."""
-    result = await get_lineage_impl("jaffle_shop.customers", "source", "downstream", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "jaffle_shop.customers", "source", "downstream", None, jaffle_shop_server.state)
 
     assert result["resource"]["resource_type"] == "source"
     assert "downstream" in result
@@ -75,7 +75,7 @@ async def test_get_lineage_source(jaffle_shop_server: "DbtCoreMcpServer") -> Non
 @pytest.mark.asyncio
 async def test_get_lineage_auto_detect(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage with auto-detection (no resource_type specified)."""
-    result = await get_lineage_impl("stg_customers", None, "both", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "stg_customers", None, "both", None, jaffle_shop_server.state)
 
     # Should find the model
     assert result["resource"]["name"] == "stg_customers"
@@ -86,7 +86,7 @@ async def test_get_lineage_auto_detect(jaffle_shop_server: "DbtCoreMcpServer") -
 async def test_get_lineage_multiple_matches(jaffle_shop_server: "DbtCoreMcpServer") -> None:
     """Test get_lineage when multiple resources match the name."""
     # "customers" exists as both a model and a source
-    result = await get_lineage_impl("customers", None, "both", None, jaffle_shop_server.state)
+    result = await get_lineage_impl(None, "customers", None, "both", None, jaffle_shop_server.state)
 
     # Should return multiple_matches structure
     assert result.get("multiple_matches") is True or result["resource"]["name"] == "customers"
@@ -98,7 +98,7 @@ async def test_get_lineage_invalid_direction(jaffle_shop_server: "DbtCoreMcpServ
     import pytest
 
     with pytest.raises(ValueError, match="Invalid direction|Lineage error"):
-        await get_lineage_impl("customers", "model", "invalid", None, jaffle_shop_server.state)
+        await get_lineage_impl(None, "customers", "model", "invalid", None, jaffle_shop_server.state)
 
 
 @pytest.mark.asyncio
@@ -107,4 +107,4 @@ async def test_get_lineage_not_found(jaffle_shop_server: "DbtCoreMcpServer") -> 
     import pytest
 
     with pytest.raises(ValueError, match="not found|Lineage error"):
-        await get_lineage_impl("nonexistent_model", None, "both", None, jaffle_shop_server.state)
+        await get_lineage_impl(None, "nonexistent_model", None, "both", None, jaffle_shop_server.state)
