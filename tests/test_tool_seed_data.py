@@ -36,7 +36,10 @@ def mock_state(real_run_results: Dict[str, Any]) -> Mock:
         result.stdout = json.dumps(real_run_results)
         return result
 
-    mock_runner.invoke = AsyncMock(side_effect=lambda args, progress_callback=None: create_mock_result())
+    async def create_mock_result_async(args: Dict[str, Any], progress_callback: Optional[Callable[..., Any]] = None) -> Mock:
+        return create_mock_result()
+
+    mock_runner.invoke = AsyncMock(side_effect=create_mock_result_async)
     state.get_runner = AsyncMock(return_value=mock_runner)
 
     # Mock validate_and_parse_results to return realistic parsing

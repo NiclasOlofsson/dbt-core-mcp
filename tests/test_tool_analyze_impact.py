@@ -1,5 +1,6 @@
 """Tests for analyze_impact tool."""
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -17,7 +18,7 @@ def mock_state() -> Mock:
     # Mock manifest with analyze_impact method
     mock_manifest = Mock()
 
-    def mock_analyze_impact(name: str, resource_type: str | None = None):
+    def mock_analyze_impact(name: str, resource_type: str | None = None) -> dict[str, Any]:
         # Handle multiple matches
         if name == "customers" and resource_type is None:
             return {

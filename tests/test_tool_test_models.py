@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from dbt_core_mcp.tools.test_models import (
-    _implementation as impl_test_models,
-)  # type: ignore[reportPrivateUsage]
+    _implementation as impl_test_models,  # type: ignore[reportPrivateUsage]
+)
 
 
 @pytest.fixture

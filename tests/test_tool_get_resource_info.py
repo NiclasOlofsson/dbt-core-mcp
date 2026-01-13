@@ -2,6 +2,7 @@
 Tests for get_resource_info tool.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -18,7 +19,7 @@ def mock_state() -> Mock:
     # Mock manifest object with get_resource_info method
     mock_manifest = Mock()
 
-    def get_resource_info(name: str, resource_type: str | None = None, include_database_schema: bool = False, include_compiled_sql: bool = False) -> dict:
+    def get_resource_info(name: str, resource_type: str | None = None, include_database_schema: bool = False, include_compiled_sql: bool = False) -> dict[str, Any]:
         """Mock implementation of manifest.get_resource_info()"""
         # Handle multiple matches when resource_type is None and name is "customers"
         if resource_type is None and name == "customers":
@@ -59,7 +60,7 @@ def mock_state() -> Mock:
 
         # Simulate finding customers model
         if name == "customers" and resource_type in ("model", None):
-            result = {
+            result: dict[str, Any] = {
                 "name": "customers",
                 "resource_type": "model",
                 "fqn": ["jaffle_shop", "models", "marts", "customers"],
@@ -80,7 +81,7 @@ def mock_state() -> Mock:
 
         # Simulate finding jaffle_shop.customers source
         if name == "jaffle_shop.customers" and resource_type in ("source", None):
-            result = {
+            result: dict[str, Any] = {
                 "source_name": "jaffle_shop",
                 "name": "customers",
                 "resource_type": "source",

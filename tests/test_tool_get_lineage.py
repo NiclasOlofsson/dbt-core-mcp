@@ -1,5 +1,6 @@
 """Tests for get_lineage tool."""
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -17,7 +18,7 @@ def mock_state() -> Mock:
     # Mock manifest with get_lineage method
     mock_manifest = Mock()
 
-    def mock_get_lineage(name: str, resource_type: str | None = None, direction: str = "both", depth: int | None = None):
+    def mock_get_lineage(name: str, resource_type: str | None = None, direction: str = "both", depth: int | None = None) -> dict[str, Any]:
         # Validate direction
         if direction not in ("upstream", "downstream", "both"):
             raise ValueError(f"Invalid direction: {direction}")
@@ -35,7 +36,7 @@ def mock_state() -> Mock:
 
         # customers model
         if name == "customers" and resource_type in ("model", None):
-            result = {
+            result: dict[str, Any] = {
                 "resource": {
                     "name": "customers",
                     "resource_type": "model",
@@ -57,7 +58,7 @@ def mock_state() -> Mock:
 
         # stg_customers model
         if name == "stg_customers" and resource_type in ("model", None):
-            result = {
+            result: dict[str, Any] = {
                 "resource": {
                     "name": "stg_customers",
                     "resource_type": "model",
@@ -75,7 +76,7 @@ def mock_state() -> Mock:
 
         # jaffle_shop.customers source
         if name == "jaffle_shop.customers" and resource_type in ("source", None):
-            result = {
+            result: dict[str, Any] = {
                 "resource": {
                     "name": "customers",
                     "source_name": "jaffle_shop",
@@ -88,13 +89,16 @@ def mock_state() -> Mock:
             }
             if direction in ("downstream", "both"):
                 result["downstream"] = [{"name": "stg_customers", "distance": 1, "resource_type": "model"}]
-            return result
 
-        # With depth limit
-        if depth == 1:
-            # Return only immediate dependencies
-            result["upstream"] = [n for n in result.get("upstream", []) if n["distance"] == 1]
-            result["downstream"] = [n for n in result.get("downstream", []) if n["distance"] == 1]
+            # With depth limit
+            if depth == 1:
+                # Return only immediate dependencies
+                if "upstream" in result:
+                    result["upstream"] = [n for n in result["upstream"] if n["distance"] == 1]
+                if "downstream" in result:
+                    result["downstream"] = [n for n in result["downstream"] if n["distance"] == 1]
+
+            return result
 
         raise ValueError(f"Resource '{name}' not found")
 

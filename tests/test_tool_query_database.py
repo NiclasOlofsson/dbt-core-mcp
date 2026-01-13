@@ -15,7 +15,11 @@ def mock_state() -> Mock:
     """Create mock state for query_database tool testing."""
     state = Mock()
     state.ensure_initialized = AsyncMock()
-    state.compile_jinja = AsyncMock(side_effect=lambda sql: sql)  # Pass-through compilation
+
+    def compile_jinja(sql: str) -> str:
+        return sql
+
+    state.compile_jinja = AsyncMock(side_effect=compile_jinja)
 
     # Mock runner with invoke_query method
     mock_runner = Mock()

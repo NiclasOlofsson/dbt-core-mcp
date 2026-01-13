@@ -1,5 +1,6 @@
 """Tests for list_resources tool."""
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -17,7 +18,7 @@ def mock_state() -> Mock:
     # Mock manifest with get_resources method
     mock_manifest = Mock()
 
-    def mock_get_resources(resource_type=None):
+    def mock_get_resources(resource_type: str | None = None) -> list[dict[str, Any]]:
         all_resources = [
             {
                 "name": "customers",
