@@ -255,8 +255,7 @@ This foundation makes all the performance optimizations in the next section poss
 ### Bridge implementation
 
 **Key Files:**
-- [bridge.py](src/dbt_core_mcp/dbt/bridge.py): Subprocess entry point, dbtRunner wrapper
-- [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py): Process manager, IPC handler, progress parser
+- [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py): Process manager, IPC handler, progress parser, subprocess entry point for dbtRunner
 
 **Streaming Output:**
 The bridge streams dbt output in real-time, parsing progress indicators:
