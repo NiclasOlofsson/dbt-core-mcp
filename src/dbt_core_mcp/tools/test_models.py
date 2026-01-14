@@ -13,6 +13,7 @@ from fastmcp.server.context import Context
 from mcp.types import ErrorData
 
 from ..context import DbtCoreServerContext
+from ..cte_generator import generate_cte_tests
 from ..dependencies import get_state
 from . import dbtTool
 
@@ -35,6 +36,17 @@ async def _implementation(
     """
     # Ensure dbt components are initialized
     await state.ensure_initialized(ctx, force_parse=False)
+
+    # Generate CTE tests if experimental features enabled
+    if state.experimental_features and state.project_dir:
+        logger.info("Experimental features enabled - generating CTE tests")
+        try:
+            cte_count = generate_cte_tests(state.project_dir)
+            if cte_count > 0:
+                logger.info(f"Generated {cte_count} CTE tests")
+        except Exception as e:
+            logger.warning(f"CTE test generation failed: {e}")
+            # Don't fail the entire test run if CTE generation fails
 
     # Build state-based selector if requested (avoids redundant parsing when possible)
     selector = await state.prepare_state_based_selection(select_state_modified, select_state_modified_plus_downstream, select)

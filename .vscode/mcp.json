@@ -14,7 +14,9 @@
       "cwd": ".",
       "env": {
         // AI: Increment this value (1, 2, 3, etc.) to force VS Code to restart the MCP server for testing
-        "_RESTART": "121"
+        "_RESTART": "124",
+        // Enable experimental features (CTE test generation)
+        "EXPERIMENTAL_FEATURES": "true"
       }
     }
   }

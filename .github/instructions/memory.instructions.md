@@ -1,11 +1,11 @@
 ---
 applyTo: '**'
 description: Workspace-specific AI memory for this project
-lastOptimized: '2026-01-10T00:55:50.024673+00:00'
-entryCount: 5
-optimizationVersion: 9
+lastOptimized: '2026-01-14T02:34:41.769594+00:00'
+entryCount: 7
+optimizationVersion: 11
 autoOptimize: true
-lastOptimizedTokenCount: 1289
+lastOptimizedTokenCount: 1430
 tokenGrowthThreshold: 1.2
 ---
 # Workspace AI Memory
@@ -88,6 +88,9 @@ This file contains workspace-specific information for AI conversations.
    - NO EXCEPTIONS
 
 ## Policies
+
+- **CLI Command Precision**: Reuse exact same command without adding unnecessary utilities like `echo` or output concatenation. User needs to approve every command line exactly as written for precise control and auditability.
+- **MCP Tool Usage**: DO NOT run dbt CLI commands directly (e.g., `dbt test`, `dbt run`, `dbt build`). ALWAYS use MCP tools instead: `mcp_dbt-core_test_models`, `mcp_dbt-core_run_models`, `mcp_dbt-core_build_models`, etc. The project is designed to work with the MCP server, not CLI execution.
 
 ## Personal Context
 

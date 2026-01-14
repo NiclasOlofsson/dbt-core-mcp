@@ -1,0 +1,264 @@
+version: 2
+
+_base_customers: &customer_input
+  input: ref('stg_customers')
+  rows:
+    - {customer_id: 1, first_name: 'Alice', last_name: 'Smith'}
+    - {customer_id: 2, first_name: 'Bob', last_name: 'Jones'}
+
+unit_tests:
+  - name: test_enriched_no_orders
+    description: |
+      Generator baseline - Regular unit tests (no cte_test config) are NOT processed
+      by the CTE generator. They run as normal dbt unit tests. This validates the
+      generator correctly filters and only generates tests marked with cte_test: true.
+    model: customers_enriched
+    given:
+      - input: ref('stg_customers')
+        rows:
+          - {customer_id: 75, first_name: 'No', last_name: 'Orders'}
+      - input: ref('stg_orders')
+        rows: []
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 75, first_name: 'No', last_name: 'Orders', first_order_date: null, most_recent_order_date: null, number_of_orders: 0, number_of_completed_orders: 0, number_of_cancelled_orders: 0, most_recent_completed_order_date: null, first_completed_order_date: null}
+
+  - name: test_enriched_customer_agg_simple
+    description: |
+      CTE mocking simplest case - Mock upstream ref() inputs (stg_orders) to test the
+      customer_agg CTE in isolation. No intermediate CTE mocking (::), just provide
+      fixture data for sources. The generator will auto-create stg_customers as empty.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 101, customer_id: 1, order_date: '2024-01-15', status: 'completed'}
+          - {order_id: 102, customer_id: 1, order_date: '2024-02-01', status: 'completed'}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 1, first_order_date: '2024-01-15', most_recent_order_date: '2024-02-01', number_of_orders: 2, number_of_completed_orders: 2, number_of_cancelled_orders: 0}
+
+  - name: test_enriched_customer_agg_cte
+    description: |
+      CTE mocking tutorial - Use ::input convention to mock intermediate CTEs.
+      The generator replaces the CTE with your test data. Key: Always include ALL
+      columns that downstream logic needs (e.g., is_completed, is_cancelled_or_returned
+      are used in customer_agg aggregations). Dict format: {col: value} is readable
+      and self-documenting.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: 301, customer_id: 1, order_date: '2024-04-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+          - {order_id: 302, customer_id: 1, order_date: '2024-04-10', status: 'cancelled', is_completed: 0, is_cancelled_or_returned: 1}
+          - {order_id: 303, customer_id: 2, order_date: '2024-04-05', status: 'returned', is_completed: 0, is_cancelled_or_returned: 1}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 1, first_order_date: '2024-04-01', most_recent_order_date: '2024-04-10', number_of_orders: 2, number_of_completed_orders: 1, number_of_cancelled_orders: 1}
+        - {customer_id: 2, first_order_date: '2024-04-05', most_recent_order_date: '2024-04-05', number_of_orders: 1, number_of_completed_orders: 0, number_of_cancelled_orders: 1}
+
+  - name: test_enriched_customer_agg_all_completed
+    description: |
+      Generator feature - Multiple tests targeting the same CTE get unique filenames via
+      hash suffix (e.g., __2d8405). This prevents collisions. Each test generates its own
+      isolated model and test file, so they don't interfere.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: 401, customer_id: 3, order_date: '2024-05-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+          - {order_id: 402, customer_id: 3, order_date: '2024-05-15', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+          - {order_id: 403, customer_id: 3, order_date: '2024-05-30', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 3, first_order_date: '2024-05-01', most_recent_order_date: '2024-05-30', number_of_orders: 3, number_of_completed_orders: 3, number_of_cancelled_orders: 0}
+
+  - name: test_enriched_customer_agg_empty
+    description: |
+      Empty fixture with dict format - Define column schema using a null row. When
+      mocking a CTE with no data, the generator needs column names to build valid SQL
+      (SELECT NULL WHERE FALSE). Dict approach: provide one row with all columns set
+      to null. Works but verbose for CTEs with many columns.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: null, customer_id: null, order_date: null, is_completed: null, is_cancelled_or_returned: null}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: null, first_order_date: null, most_recent_order_date: null, number_of_orders: 0, number_of_completed_orders: null, number_of_cancelled_orders: null}
+
+  - name: test_enriched_customer_agg_csv_columns_only
+    description: |
+      Empty fixture with CSV format - Define column schema using just CSV headers. When
+      mocking a CTE with no data, the generator needs column names to build valid SQL
+      (SELECT NULL WHERE FALSE). CSV approach: list column names in header row only,
+      no data rows needed. Cleaner than dict format for CTEs with many columns.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        format: csv
+        rows: |
+          order_id,customer_id,order_date,status,is_completed,is_cancelled_or_returned
+    expect:
+      format: dict
+      rows: []
+
+  - name: test_enriched_customer_agg_with_ref_override
+    description: |
+      CTE mocking advanced - When both ref() and ::input exist for the same upstream,
+      the :: mock WINS and the ref() is stripped as orphan. This tests the generator's
+      replace_cte_with_mock logic. Example: ref('stg_orders') is ignored because
+      ::orders_with_flags provides the mock.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 999, customer_id: 99, order_date: '2024-01-01', status: 'pending'}
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: 501, customer_id: 5, order_date: '2024-06-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 5, first_order_date: '2024-06-01', most_recent_order_date: '2024-06-01', number_of_orders: 1, number_of_completed_orders: 1, number_of_cancelled_orders: 0}
+
+  - name: test_enriched_customer_agg_partial_refs
+    description: |
+      Generator feature - Auto-adds empty fixtures for missing ref() inputs. Only
+      stg_orders is provided, but the model also needs stg_customers. The generator
+      auto-discovers this dependency and adds stg_customers as empty. This is key:
+      you specify only what you need, generator fills in blanks. dbt makes you add all refs manually.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 201, customer_id: 2, order_date: '2024-03-01', status: 'completed'}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 2, first_order_date: '2024-03-01', most_recent_order_date: '2024-03-01', number_of_orders: 1, number_of_completed_orders: 1, number_of_cancelled_orders: 0}
+
+  - name: test_enriched_order_rankings_intermediate_cte
+    description: |
+      Generator flexibility - Test different CTE abstraction levels, not just final outputs.
+      This targets order_rankings (deeper than customer_agg). Mocks orders_with_flags upstream.
+      Shows you can test any CTE layer, demonstrating the generator's flexibility across
+      model hierarchy. Expected output includes ranking window functions (rn_desc, rn_asc).
+    model: customers_enriched::order_rankings
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: 601, customer_id: 6, order_date: '2024-07-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+          - {order_id: 602, customer_id: 6, order_date: '2024-07-05', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+    expect:
+      format: dict
+      rows:
+        - {order_id: 601, customer_id: 6, order_date: '2024-07-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0, rn_asc: 1, rn_desc: 2}
+        - {order_id: 602, customer_id: 6, order_date: '2024-07-05', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0, rn_asc: 2, rn_desc: 1}
+
+  - name: test_enriched_customer_agg_csv_with_data
+    description: |
+      CSV format with data rows - Full CSV fixture including headers and data. Tests
+      SQL escaping for string values (e.g., O'Brien with apostrophe). Generator must
+      escape single quotes by doubling them ('O''Brien') to avoid breaking SQL syntax.
+      CSV format is clean for multi-row test data compared to dict format.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders_with_flags
+        format: csv
+        rows: |
+          order_id,customer_id,order_date,status,is_completed,is_cancelled_or_returned
+          701,7,2024-08-01,shipped - O'Brien's order,1,0
+          702,7,2024-08-15,completed,1,0
+    expect:
+      format: csv
+      rows: |
+        customer_id,first_order_date,most_recent_order_date,number_of_orders,number_of_completed_orders,number_of_cancelled_orders
+        7,2024-08-01,2024-08-15,2,2,0
+
+  - name: test_enriched_customer_agg_multiple_cte_mocks
+    description: |
+      Multiple CTE mocks - Mock BOTH ::orders AND ::orders_with_flags in a single test
+      to verify the generator handles multiple CTE replacements. The ::orders mock is
+      used to build orders_with_flags (unless also mocked), and ::orders_with_flags is
+      used by customer_agg. This tests the generator's ability to handle layered CTE
+      dependencies when multiple are explicitly mocked.
+    model: customers_enriched::customer_agg
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::orders
+        rows:
+          - {order_id: 801, customer_id: 8, order_date: '2024-09-01', status: 'completed'}
+          - {order_id: 802, customer_id: 8, order_date: '2024-09-10', status: 'pending'}
+      - input: ::orders_with_flags
+        rows:
+          - {order_id: 801, customer_id: 8, order_date: '2024-09-01', status: 'completed', is_completed: 1, is_cancelled_or_returned: 0}
+          - {order_id: 802, customer_id: 8, order_date: '2024-09-10', status: 'pending', is_completed: 0, is_cancelled_or_returned: 0}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 8, first_order_date: '2024-09-01', most_recent_order_date: '2024-09-10', number_of_orders: 2, number_of_completed_orders: 1, number_of_cancelled_orders: 0}
+
+  - name: test_enriched_final_cte
+    description: |
+      Last CTE in chain - Test the ::final CTE (the last named CTE before SELECT).
+      Nothing special about testing the last CTE - generator handles it like any other.
+      Mock all upstream CTEs (customers, customer_agg, recent_completed, first_completed)
+      to isolate the final join logic. This completes our coverage: we've now tested
+      early CTEs, middle CTEs, and the last CTE in the chain.
+    model: customers_enriched::final
+    config:
+      enabled: false
+      cte_test: true
+    given:
+      - input: ::customers
+        rows:
+          - {customer_id: 9, first_name: 'Final', last_name: 'Test'}
+      - input: ::customer_agg
+        rows:
+          - {customer_id: 9, first_order_date: '2024-10-01', most_recent_order_date: '2024-10-15', number_of_orders: 3, number_of_completed_orders: 2, number_of_cancelled_orders: 1}
+      - input: ::recent_completed
+        rows:
+          - {customer_id: 9, most_recent_completed_order_date: '2024-10-10'}
+      - input: ::first_completed
+        rows:
+          - {customer_id: 9, first_completed_order_date: '2024-10-01'}
+    expect:
+      format: dict
+      rows:
+        - {customer_id: 9, first_name: 'Final', last_name: 'Test', first_order_date: '2024-10-01', most_recent_order_date: '2024-10-15', most_recent_completed_order_date: '2024-10-10', first_completed_order_date: '2024-10-01', number_of_orders: 3, number_of_completed_orders: 2, number_of_cancelled_orders: 1}

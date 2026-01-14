@@ -178,3 +178,9 @@ examples/jaffle_shop/logs/
 examples/jaffle_shop/target/
 examples/jaffle_shop/*.duckdb
 examples/jaffle_shop/*.duckdb.wal
+
+# Generated CTE test artifacts (preprocessed by cte_test_generator.py)
+models/**/__cte_tests/
+unit_tests/**/__cte_tests/
+examples/jaffle_shop/models/**/__cte_tests/
+examples/jaffle_shop/unit_tests/**/__cte_tests/

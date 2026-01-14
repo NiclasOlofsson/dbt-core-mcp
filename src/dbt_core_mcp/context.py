@@ -44,6 +44,7 @@ class DbtCoreServerContext:
     manifest: "ManifestLoader | None"
     adapter_type: str | None
     force_fresh_runner: bool
+    experimental_features: bool
     _init_lock: asyncio.Lock
     _explicit_project_dir: Path | None
     server: Any = None  # Type is DbtCoreMcpServer but use Any to avoid circular import

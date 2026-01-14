@@ -89,6 +89,9 @@ class DbtCoreMcpServer:
         project_dir_resolved: Path | None = None
         profiles_dir = os.path.expanduser("~/.dbt")
 
+        # Parse experimental features flag from environment
+        experimental_features = os.getenv("EXPERIMENTAL_FEATURES", "false").lower() == "true"
+
         # Create shared state with all dbt components
         self.state = DbtCoreServerContext(
             app=self.app,
@@ -99,6 +102,7 @@ class DbtCoreMcpServer:
             manifest=None,
             adapter_type=None,
             force_fresh_runner=False,  # Set to False to reuse runners for performance
+            experimental_features=experimental_features,
             _init_lock=asyncio.Lock(),
             _explicit_project_dir=_explicit_project_dir,
         )
