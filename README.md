@@ -654,6 +654,7 @@ Of course, code contributions are welcome too! Check out [CONTRIBUTING.md](CONTR
 ## Learn More
 
 - **[Technical Architecture](TECHNICAL.md)** - Deep dive into zero-config philosophy, bridge architecture, performance optimizations, and design decisions. For the curious who want to understand how it all works under the hood.
+- **[CTE Unit Testing](CTE-UNIT-TESTING.md)** - Comprehensive guide to testing SQL CTEs in isolation. Learn how to test complex SQL logic without building massive fixtures, enabling true TDD workflows for dbt models.
 
 ## License
 
