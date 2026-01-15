@@ -7,8 +7,9 @@ This server provides tools for interacting with dbt projects via the Model Conte
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import unquote
 from urllib.request import url2pathname
 
@@ -49,9 +50,24 @@ class DbtCoreMcpServer:
         # FastMCP initialization with recommended arguments
         from . import __version__
 
+        @asynccontextmanager
+        async def lifespan(app: FastMCP) -> AsyncIterator[None]:
+            """Lifespan context manager for server startup and shutdown."""
+            # Startup
+            logger.info("dbt Core MCP Server starting up...")
+            yield
+            # Shutdown
+            logger.info("dbt Core MCP Server shutting down...")
+            if self.runner:
+                logger.info("Stopping persistent dbt process...")
+                await self.runner.shutdown()
+                logger.info("Persistent dbt process stopped successfully")
+            logger.info("dbt Core MCP Server shutdown complete")
+
         self.app = FastMCP(
             version=__version__,
             name="dbt Core MCP",
+            lifespan=lifespan,
             instructions="""dbt Core MCP Server for interacting with dbt projects.
 
             This server provides tools to:
