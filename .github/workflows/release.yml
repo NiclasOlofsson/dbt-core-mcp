@@ -38,7 +38,7 @@ jobs:
       - name: Get previous tag
         id: prev_tag
         run: |
-          echo "tag=$(git describe --tags --abbrev=0 \"${GITHUB_REF_NAME}^\")" >> "$GITHUB_OUTPUT"
+          echo "tag=$(git describe --tags --abbrev=0 \"${GITHUB_REF_NAME}^{}\")" >> "$GITHUB_OUTPUT"
       - name: Assemble release notes
         id: release_notes
         run: |
@@ -52,6 +52,8 @@ jobs:
         with:
           generate_release_notes: false
           body: ${{ steps.release_notes.outputs.notes }}
-          files: dist/*
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
