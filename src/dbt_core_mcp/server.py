@@ -144,7 +144,7 @@ class DbtCoreMcpServer:
         # TimingMiddleware and LoggingMiddleware removed - they use structlog with column alignment
         # which causes formatting issues in VS Code's output panel
 
-        # Register tools statically
+        # Register tools dynamically
         self._register_tools()
 
         logger.info("dbt Core MCP Server initialized")
@@ -158,23 +158,12 @@ class DbtCoreMcpServer:
         return await self._get_runner()
 
     def _register_tools(self) -> None:
-        """Manually register all dbt Core MCP tools."""
-        # Import all tool modules
-        from .tools import analyze_impact, build_models, get_lineage, get_project_info, get_resource_info, install_deps, list_resources, load_seeds, query_database, run_models, snapshot_models, test_models
+        """Dynamically register all dbt Core MCP tools."""
+        from .tools import discover_tools_in_package
 
-        # Register each tool
-        self.app.tool()(analyze_impact.analyze_impact)
-        self.app.tool()(build_models.build_models)
-        self.app.tool()(get_lineage.get_lineage)
-        self.app.tool()(get_project_info.get_project_info)
-        self.app.tool()(get_resource_info.get_resource_info)
-        self.app.tool()(install_deps.install_deps)
-        self.app.tool()(list_resources.list_resources)
-        self.app.tool()(load_seeds.load_seeds)
-        self.app.tool()(query_database.query_database)
-        self.app.tool()(run_models.run_models)
-        self.app.tool()(snapshot_models.snapshot_models)
-        self.app.tool()(test_models.test_models)
+        tool_functions = discover_tools_in_package("dbt_core_mcp.tools")
+        for tool_func in tool_functions:
+            self.app.tool()(tool_func)
 
     # (Removed) Legacy toolImpl_* wrappers: tools are now auto-discovered via FileSystemProvider
 
