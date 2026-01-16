@@ -182,33 +182,48 @@ This project uses [bump-my-version](https://github.com/callowayproject/bump-my-v
    git push
    ```
 
-2. **Bump the version:**
+2. **Draft release notes with AI (from git log):**
+   - Ask the AI to review the git log between the previous tag and `HEAD`.
+    - The AI should produce a short Markdown summary grouped into **only**:
+       - **Features** (code changes from `feat` commits)
+       - **Fixes** (code changes from `fix` commits)
+    - **Exclude** non-code items (docs, tests, chores, refactors without behavior change).
+    - Example output:
+       - **Features**
+          - Add tool metadata helpers and discovery system.
+          - Add server lifespan context manager for graceful shutdown.
+       - **Fixes**
+          - [List only code fixes; omit docs/tests/chores]
+   - Save this summary to a temporary file **outside the repo** or in a **gitignored** location (e.g., `temp_auto/`).
+   - This ensures bump-my-version creates an **annotated tag** with your release notes.
+
+3. **Bump the version (with annotated tag message):**
    ```bash
    # For bug fixes (0.2.5 → 0.2.6)
-   uv run bump-my-version bump patch
+   uv run bump-my-version bump patch --tag-message "$(cat release_notes.txt)"
    
    # For new features (0.2.5 → 0.3.0)
-   uv run bump-my-version bump minor
+   uv run bump-my-version bump minor --tag-message "$(cat release_notes.txt)"
    
    # For breaking changes (0.2.5 → 1.0.0)
-   uv run bump-my-version bump major
+   uv run bump-my-version bump major --tag-message "$(cat release_notes.txt)"
    
    # Or set a specific version
-   uv run bump-my-version bump --new-version 1.0.0
+   uv run bump-my-version bump --new-version 1.0.0 --tag-message "$(cat release_notes.txt)"
    ```
 
-3. **Push the version bump and tag:**
+4. **Push the version bump and tag:**
    ```bash
    git push --follow-tags
    ```
 
-4. **GitHub Actions will automatically:**
+5. **GitHub Actions will automatically:**
    - Run quality checks (format, typecheck, tests)
    - Build the package
    - Create a GitHub Release with auto-generated release notes
    - Publish to PyPI
 
-> **Note:** The entire release process is automated via GitHub Actions. Once you push the tag, the CI pipeline handles building, testing, creating the GitHub release with auto-generated notes from commit history, and publishing to PyPI. You don't need to manually create releases or write release notes.
+> **Note:** The entire release process is automated via GitHub Actions. Once you push the tag, the CI pipeline handles building, testing, creating the GitHub release, and publishing to PyPI. The release notes should come from your annotated tag message.
 
 ### Version Scheme
 

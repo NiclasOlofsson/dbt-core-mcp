@@ -30,33 +30,18 @@ This file contains workspace-specific information for AI conversations.
    - NO EXCEPTIONS
 
 2. **Selective Testing Protocol**:
-   - DO NOT run `pytest` during development "just to check" or "to verify"
-   - Tests are SLOW (5+ minutes for full suite) - respect user's time
-   - ONLY run `pytest` in these cases:
-     - a) Pre-commit validation (Law 1 requirement)
-     - b) Explicitly requested by user
-     - c) After fixing a specific failing test (run that test only, not full suite)
-   - During development: rely on type checking (`pyright`) and linting (`ruff`)
-   - CI will catch test failures - don't waste time with redundant local test runs
-   - VIOLATION: Running tests "to make sure it works" or similar justifications
+   - RUN `pytest` to validate implementations and verify code works
+   - Tests provide definitive feedback on whether changes are correct
+   - Use tests during development to catch issues early
+   - For targeted testing: run specific test files or functions when fixing particular issues
+   - Pre-commit validation always requires full test suite (Law 1 requirement)
+   - Let tests decide if implementation works rather than guessing
+   - For complete validation: `uv run ruff check src tests && uv run ruff format --check src tests && uv run pyright src tests && uv run pytest`
    - NO EXCEPTIONS
 
 3. **MCP Server Restart Protocol**:
-   - CONFIGURATION: Use `_RESTART` counter in `.vscode/mcp.json` env section to force server restarts
-     - Increment the value (e.g., `"_RESTART": "71"` → `"72"`) to trigger VS Code to restart the MCP server
-     - Essential for testing MCP server code changes without manually restarting VS Code
-   - STEP 1: Update `.vscode/mcp.json` file by incrementing `_RESTART` counter
-   - STEP 2: **CRITICAL** - Do NOT invoke MCP tools in the same tool call batch as the mcp.json edit
-   - STEP 3: Wait for next user interaction or separate tool invocation
-   - STEP 4: Then invoke MCP tools for testing
-   - **PRE-COMMIT CLEANUP**:
-     - BEFORE committing: ALWAYS restore `.vscode/mcp.json` to its original state
-     - Use `git restore .vscode/mcp.json` OR manually revert `_RESTART` counter changes
-     - The restart counter is for LOCAL TESTING ONLY - never commit changes to it
-   - REASON: Parallel execution causes tools to run BEFORE file edit completes
-   - Server restarts asynchronously in background - do NOT use sleep commands
-   - Framework handles restart timing automatically
-   - APPLIES TO: dbt-core-mcp project MCP server management
+   - Increment `_RESTART` counter in `.vscode/mcp.json` to restart the MCP server
+   - Always restore mcp.json before committing (testing only)
    - NO EXCEPTIONS
 
 4. **Git Commit Amendment Protocol**:
@@ -71,18 +56,10 @@ This file contains workspace-specific information for AI conversations.
    - NO EXCEPTIONS
 
 5. **Release Protocol (MANDATORY)**:
-   - **NEVER manually edit version in pyproject.toml**
-   - **NEVER create tags manually with `git tag`**
-   - **ALWAYS use bump-my-version tool for ALL releases**
-   - STEP 1: Ensure all changes committed and pushed (`git status` clean)
-   - STEP 2: Run version bump command:
-     - For bug fixes/docs: `uv run bump-my-version bump patch`
-     - For new features: `uv run bump-my-version bump minor`
-     - For breaking changes: `uv run bump-my-version bump major`
-   - STEP 3: Push with tags: `git push --follow-tags`
-   - STEP 4: GitHub Actions handles: build, test, release, PyPI publish
-   - The tool updates BOTH `version` AND `current_version` in pyproject.toml automatically
-   - Manual version edits will break future releases (current_version mismatch)
+   - ALWAYS follow the complete release process documented in CONTRIBUTING.md
+   - NEVER manually edit version in pyproject.toml or create tags with `git tag`
+   - ALWAYS use bump-my-version tool for ALL releases
+   - See CONTRIBUTING.md "Release Process" section for detailed steps including AI-assisted release notes
    - VIOLATION PENALTY: Immediate rollback and restart with correct procedure
    - APPLIES TO: All releases in dbt-core-mcp workspace
    - NO EXCEPTIONS

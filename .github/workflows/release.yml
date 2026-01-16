@@ -15,6 +15,8 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -33,10 +35,23 @@ jobs:
         run: uv run pyright src tests
       - name: Test
         run: uv run pytest
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          echo "tag=$(git describe --tags --abbrev=0 \"${GITHUB_REF_NAME}^\")" >> "$GITHUB_OUTPUT"
+      - name: Assemble release notes
+        id: release_notes
+        run: |
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "Full Changelog: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.tag }}...${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          generate_release_notes: false
+          body: ${{ steps.release_notes.outputs.notes }}
           files: dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
