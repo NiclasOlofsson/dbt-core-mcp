@@ -22,8 +22,7 @@ def dbtTool(**metadata: Any) -> Callable[[F], F]:
     """
 
     def decorator(func: F) -> F:
-        if metadata:
-            func.metadata = metadata  # type: ignore[attr-defined]
+        func.metadata = metadata  # type: ignore[attr-defined]
         return func
 
     return decorator
