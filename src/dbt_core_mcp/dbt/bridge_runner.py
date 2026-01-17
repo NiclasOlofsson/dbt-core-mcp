@@ -147,6 +147,8 @@ class BridgeRunner:
             dbt_log_dir = Path(tempfile.gettempdir()) / f"dbt_mcp_logs_{project_hash}"
             dbt_log_dir.mkdir(parents=True, exist_ok=True)
             env["DBT_LOG_PATH"] = str(dbt_log_dir)
+            # Disable log file rotation to prevent Windows file locking issues
+            env["DBT_MAX_LOG_FILE_SIZE"] = "0"  # Disable rotation by size
             env.update(env_vars)
         else:
             import os
@@ -489,11 +491,23 @@ class BridgeRunner:
         # Get environment-specific variables (e.g., PIPENV_IGNORE_VIRTUALENVS for pipenv)
         env_vars = get_env_vars(self.python_command)
         import os
+        import tempfile
 
         env = os.environ.copy()
 
         # Force UTF-8 encoding for subprocess to handle Unicode characters in dbt output
         env["PYTHONIOENCODING"] = "utf-8"
+
+        # Use unique temp directory per project for dbt logs to avoid Windows file locking
+        # Hash the project path to create a unique but consistent subdirectory
+        import hashlib
+
+        project_hash = hashlib.md5(str(self.project_dir).encode()).hexdigest()[:8]
+        dbt_log_dir = Path(tempfile.gettempdir()) / f"dbt_mcp_logs_{project_hash}"
+        dbt_log_dir.mkdir(parents=True, exist_ok=True)
+        env["DBT_LOG_PATH"] = str(dbt_log_dir)
+        # Disable log file rotation to prevent Windows file locking issues
+        env["DBT_MAX_LOG_FILE_SIZE"] = "0"  # Disable rotation by size
 
         if env_vars:
             env.update(env_vars)
