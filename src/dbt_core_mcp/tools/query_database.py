@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,114 @@ from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIs
 from fastmcp.server.context import Context
 
 from ..context import DbtCoreServerContext
+from ..cte_generator import generate_cte_model
 from ..dependencies import get_state
 from . import dbtTool
 
 logger = logging.getLogger(__name__)
+
+
+def extract_cte_sql(
+    project_dir: Path,
+    cte_name: str,
+    model_name: str,
+    additional_sql: str = "",
+) -> str:
+    """Extract CTE SQL from a model file and optionally append additional SQL.
+
+    This function extracts a specific CTE from a dbt model file, resolves all its
+    upstream dependencies, and optionally appends user-provided SQL for filtering.
+
+    Args:
+        project_dir: Path to the dbt project directory
+        cte_name: Name of the CTE to extract
+        model_name: Name of the model file containing the CTE (without .sql extension)
+        additional_sql: Optional SQL to append (e.g., "WHERE x > 10 LIMIT 5")
+
+    Returns:
+        Complete SQL ready to execute (either the extracted CTE or wrapped with additional SQL)
+
+    Raises:
+        ValueError: If model file not found, multiple files found, or CTE extraction fails
+
+    Examples:
+        # Extract a CTE without additional SQL
+        sql = extract_cte_sql(project_dir, "customer_agg", "customers")
+
+        # Extract a CTE with filtering
+        sql = extract_cte_sql(
+            project_dir,
+            "customer_agg",
+            "customers",
+            "WHERE order_count > 5 LIMIT 10"
+        )
+    """
+    # Find the model file
+    models_dir = project_dir / "models"
+    model_files = list(models_dir.rglob(f"{model_name}.sql"))
+
+    if not model_files:
+        raise ValueError(f"Model file '{model_name}.sql' not found in models directory")
+
+    if len(model_files) > 1:
+        raise ValueError(f"Multiple model files found for '{model_name}': {[str(f) for f in model_files]}")
+
+    model_file = model_files[0]
+    logger.info(f"Extracting CTE '{cte_name}' from model '{model_name}' at {model_file}")
+
+    # Create a temporary file for the extracted CTE model
+    # Use system temp directory to avoid dbt picking it up as a model
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+
+        try:
+            # Generate CTE model using the generator logic
+            # The generate_cte_model expects empty test_given list when we're just extracting
+            success = generate_cte_model(
+                base_model_path=model_file,
+                cte_name=cte_name,
+                test_given=[],  # No CTE mocking when querying
+                output_path=tmp_path,
+            )
+
+            if not success:
+                raise ValueError(f"Failed to extract CTE '{cte_name}' from model '{model_name}'")
+
+            # Read the generated CTE SQL
+            cte_sql = tmp_path.read_text()
+
+            # Remove the sqlfluff disable comment if present
+            cte_sql = re.sub(r"^-- sqlfluff:disable\s*\n", "", cte_sql, flags=re.MULTILINE)
+
+            # If user provided additional SQL, replace the final SELECT with a subquery
+            # The CTE extraction already includes "select * from {cte_name}" at the end
+            if additional_sql and additional_sql.strip():
+                # Replace "select * from {cte_name}" with "select * from ({original_cte}) as _cte {additional_sql}"
+                # This allows appending WHERE, ORDER BY, LIMIT, etc.
+                pattern = rf"select \* from {re.escape(cte_name)}$"
+                replacement = f"select * from {cte_name} {additional_sql}"
+                final_sql = re.sub(pattern, replacement, cte_sql, flags=re.IGNORECASE | re.MULTILINE)
+            else:
+                # Use the CTE SQL as-is (already has select * from cte_name)
+                final_sql = cte_sql
+
+            logger.debug(f"Final SQL to execute:\n{final_sql[:500]}...")
+            return final_sql
+
+        finally:
+            # Clean up temporary file
+            # Use a small delay to allow processes to release the file
+            import time
+
+            time.sleep(0.1)
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except PermissionError:
+                # File is still in use (Windows), try to delete it later
+                logger.debug(f"Temporary CTE file {tmp_path} still in use, will be cleaned up by OS")
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary CTE file {tmp_path}: {e}")
 
 
 async def _implementation(
@@ -26,6 +131,8 @@ async def _implementation(
     sql: str,
     output_file: str | None,
     output_format: str,
+    cte_name: str | None,
+    model_name: str | None,
     state: DbtCoreServerContext,
 ) -> dict[str, Any]:
     """Implementation function for query_database tool.
@@ -40,6 +147,22 @@ async def _implementation(
         if ctx:
             await ctx.report_progress(progress=current, total=total, message=message)
 
+    # Handle CTE query if cte_name is provided
+    if cte_name:
+        if not model_name:
+            raise ValueError("model_name is required when querying a CTE (cte_name is specified)")
+
+        if not state.project_dir:
+            raise ValueError("Project directory not initialized")
+
+        # Extract CTE SQL using the dedicated function
+        sql = extract_cte_sql(
+            project_dir=state.project_dir,
+            cte_name=cte_name,
+            model_name=model_name,
+            additional_sql=sql,
+        )
+
     # Execute query using dbt show with --no-populate-cache for optimal performance
     runner = await state.get_runner()
     result = await runner.invoke_query(sql, progress_callback=progress_callback if ctx else None)  # type: ignore
@@ -48,9 +171,14 @@ async def _implementation(
         error_msg = str(result.exception) if result.exception else "Unknown error"
         # Include dbt output in error message for context
         full_error = error_msg
-        if result.stdout and "Database Error" in result.stdout:
-            # Extract the helpful database error details
+
+        # Try to extract error from stdout or stderr
+        if result.stdout and "Error" in result.stdout:
             full_error = result.stdout
+        elif hasattr(result, "stderr") and result.stderr:
+            full_error = result.stderr
+
+        logger.error(f"Query execution failed. Error: {error_msg}, stdout: {result.stdout if hasattr(result, 'stdout') else 'N/A'}")
         raise RuntimeError(f"Query execution failed: {full_error}")
 
     # Parse JSON output from dbt show (extract the "show" payload)
@@ -168,6 +296,8 @@ async def query_database(
     sql: str,
     output_file: str | None = None,
     output_format: str = "json",
+    cte_name: str | None = None,
+    model_name: str | None = None,
     state: DbtCoreServerContext = Depends(get_state),
 ) -> dict[str, Any]:
     """Execute a SQL query against the dbt project's database.
@@ -179,6 +309,12 @@ async def query_database(
     - Use {{ ref('model_name') }} to reference dbt models
     - Use {{ source('source_name', 'table_name') }} to reference source tables
     - dbt compiles these to actual table names before execution
+
+    **CTE Querying**:
+    - Use cte_name and model_name to query individual CTEs from a model
+    - The tool extracts the CTE and all its upstream dependencies
+    - Compiles the extracted SQL to resolve refs/sources
+    - Optionally append additional SQL for filtering (WHERE, LIMIT, etc.)
 
     **Output Management**:
     - For large result sets (>100 rows), use output_file to save results
@@ -194,10 +330,13 @@ async def query_database(
     Args:
         sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
              For exploratory queries, include LIMIT. For aggregations/counts, omit it.
+             When querying a CTE, this can be additional SQL to append (e.g., "WHERE x > 10 LIMIT 5")
         output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
                     If provided, only metadata is returned (no preview for CSV/TSV).
                     If omitted, all data is returned inline (may consume large context).
         output_format: Output format - "json" (default), "csv", or "tsv"
+        cte_name: Optional CTE name to query from a model (requires model_name)
+        model_name: Optional model name containing the CTE (required when cte_name is specified)
         state: Shared state object injected by FastMCP
 
     Returns:
@@ -208,6 +347,7 @@ async def query_database(
 
     Raises:
         RuntimeError: If query execution fails
+        ValueError: If invalid CTE/model parameters provided
 
     Examples:
         # Simple query with ref()
@@ -218,6 +358,20 @@ async def query_database(
 
         # Aggregation (no LIMIT needed)
         query_database(sql="SELECT COUNT(*) as total FROM {{ ref('customers') }}")
+
+        # Query a specific CTE from a model
+        query_database(
+            cte_name="customer_agg",
+            model_name="customers",
+            sql="LIMIT 10"  # Optional additional SQL
+        )
+
+        # Query a CTE with filtering
+        query_database(
+            cte_name="customer_agg",
+            model_name="customers",
+            sql="WHERE order_count > 5 LIMIT 20"
+        )
 
         # Save large results to file
         query_database(
@@ -232,4 +386,4 @@ async def query_database(
             output_format="csv"
         )
     """
-    return await _implementation(ctx, sql, output_file, output_format, state)
+    return await _implementation(ctx, sql, output_file, output_format, cte_name, model_name, state)

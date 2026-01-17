@@ -48,6 +48,7 @@ If you've tried other dbt tools with Copilot (dbt power user, datamate, etc.), y
 - **Works with ANY Adapter**: duckdb, snowflake, postgres, bigquery, databricks - if you have it, we work with it
 - **Smart Selection**: Automatic change detection - run only what changed, or changed + downstream
 - **Full Project Awareness**: Lineage analysis, impact assessment, compiled SQL - instant access to everything
+- **Peek Inside CTEs**: Query individual CTEs inside any model to see intermediate results, debug transformations, and design realistic fixtures
 - **True Pair Programming**: Stay in conversation with Copilot while it executes dbt commands and reports results
 - **Schema Change Detection**: Automatically detects column changes and recommends downstream updates
 - **No Configuration Needed**: Works with your existing dbt setup - any adapter, any database, any version
@@ -394,23 +395,36 @@ Execute SQL queries against your database using dbt's ref() and source() functio
 
 >&nbsp;  
 >You: *"Show me 10 rows from the customers model"*  
->Copilot: *Executes SELECT * FROM {{ ref('customers') }} LIMIT 10 and displays results*
+>Copilot: *Executes SELECT * FROM {{ ref('customers') }} LIMIT 10 and displays results*  
+>
+>You: *"Show me the customer_agg CTE from customers with order_count > 5"*  
+>Copilot: *Extracts just that CTE (with upstream deps), applies your filter, and shows the rows*  
+>
+>You: *"Great, use that output to shape my CTE unit test fixtures"*  
+>Copilot: *Done. You get realistic input/output examples without running the whole model*  
 >
 >You: *"Count the orders in the staging table"*  
->Copilot: *Runs SELECT COUNT(*) and shows the count*
+>Copilot: *Runs SELECT COUNT(*) and shows the count*  
 >
 >You: *"What's the schema of stg_payments?"*  
->Copilot: *Queries column information and displays schema*
+>Copilot: *Queries column information and displays schema*  
 >
 >You: *"Export customers data to CSV for analysis"*  
->Copilot: *Saves query results to a CSV file you can open in Excel*
+>Copilot: *Saves query results to a CSV file you can open in Excel*  
 >
 >You: *"Save all orders to a TSV file"*  
 >Copilot: *Exports data in tab-separated format for import into other tools*  
+>
+>You: *"Run the orders_with_flags CTE from customers_enriched sorted by most recent"*  
+>Copilot: *Executes just that CTE (includes upstream deps), applies ORDER BY/LIMIT, and shows the slice you need to reason about the logic*  
+>
+>You: *"Use that to build a realistic CTE unit test fixture"*  
+>Copilot: *Yes—now your fixtures match real shapes and edge cases*  
 >&nbsp;
 
 **What you can do:**
 - Query any model using `{{ ref('model_name') }}` or source using `{{ source('source_name', 'table_name') }}`
+- Query any **individual CTE** inside a model with `cte_name` + `model_name`, and optionally add `sql` for WHERE/ORDER BY/LIMIT to zoom in on exactly what a step produces
 - Get results displayed directly in the conversation (good for small result sets)
 - Export to CSV or TSV files (perfect for large datasets or further analysis in Excel/other tools)
 - Automatically handles large results without overwhelming the conversation

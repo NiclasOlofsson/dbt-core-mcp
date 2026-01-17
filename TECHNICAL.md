@@ -272,7 +272,64 @@ The bridge streams dbt output in real-time, parsing progress indicators:
 
 These optimizations were developed and tested on a production dbt project with 1500 models, 500 sources, 850 macros, and 30 seeds running on Databricks. The performance improvements are real-world measurements from this scale of project.
 
-### 1. Query Optimization: `--no-populate-cache` (70% faster)
+### 1. CTE extraction with dbt compilation
+
+**Problem:**
+When debugging or inspecting intermediate transformation steps, users needed to manually copy CTEs from model files, figure out upstream dependencies, and paste them into separate queries. This workflow broke when CTEs referenced other CTEs or used `{{ ref() }}` or `{{ source() }}` macros—requiring users to manually resolve all dependencies and templating before they could run a query.
+
+**Solution:**
+The `query_database` tool supports extracting and querying individual CTEs from dbt models with full compilation:
+
+```python
+# Query a specific CTE with optional filtering
+query_database(
+    cte_name="customer_agg",
+    model_name="customers", 
+    sql="WHERE order_count > 5 LIMIT 10"
+)
+```
+
+**How It Works:**
+
+1. **CTE Extraction**: Parses the model file to identify the target CTE and its upstream dependencies
+2. **Dependency Resolution**: Recursively includes all CTEs that the target CTE references
+3. **SQL Generation**: Generates a query with all dependent CTEs, then selects from the target CTE
+4. **SQL Composition**: Optionally wraps the result to apply user filters/limits
+5. **Execution**: Runs the composed query through `dbt show` (which handles `{{ ref() }}` and `{{ source() }}` resolution)
+
+**Technical Implementation:**
+
+The `extract_cte_sql` function ([query_database.py](src/dbt_core_mcp/tools/query_database.py)):
+- Uses the same CTE generator logic as unit test fixture generation
+- Parses the model's raw SQL file to extract the target CTE definition
+- Recursively traces CTE dependencies within the model
+- Generates: `WITH cte_dep1 AS (...), cte_dep2 AS (...), target_cte AS (...) SELECT * FROM target_cte [user_sql]`
+- Writes to a temporary file (system temp directory to avoid dbt detecting it as a model)
+- Returns the complete SQL string for execution via `dbt show`
+
+**Use Cases:**
+
+- **Debugging**: Inspect intermediate transformation steps to find where data issues occur
+- **Validation**: Verify CTE logic produces expected results before full model execution
+- **Fixture Creation**: Query CTEs to get realistic data shapes for unit test fixtures
+- **Exploration**: Understand complex models by examining each step in isolation
+
+**Performance Considerations:**
+
+- CTE extraction overhead: Fast, just parsing raw SQL (not running dbt compile)
+- dbt show execution: ~2s for first query (manifest load), < 1s for subsequent queries (warm manifest)
+- No database overhead: Only the requested CTE executes, not the entire model
+- Temp file cleanup: Automatically removes temporary SQL files after use
+
+**Error Handling:**
+
+- Clear errors if CTE doesn't exist in the model
+- Reports syntax errors in the model SQL
+- Handles circular CTE dependencies gracefully
+
+**Location:** [query_database.py](src/dbt_core_mcp/tools/query_database.py), `extract_cte_sql()` function
+
+### 2. Query Optimization: `--no-populate-cache` (70% faster)
 
 **Problem:**
 When users run a simple query, they were experiencing 6-7 second execution times even though the actual SQL took less than 200ms. The missing time was being consumed by dbt's default behavior of querying information_schema upfront to cache metadata for all tables and views in the database. For a single query, this cache population is pure overhead that users have to wait through.
@@ -295,8 +352,9 @@ ExecuteQuery(sql):
 - None! This optimization is specific to `dbt show` (query operations)
 - The cache isn't needed for single query execution
 - `dbt run` and `dbt build` commands use normal caching (separate optimization below)
+**Location:** [query_database.py](src/dbt_core_mcp/tools/query_database.py)
 
-### 2. Selective Caching: `--cache-selected-only` (40% faster selective runs)
+### 3. Selective Caching: `--cache-selected-only` (40% faster selective runs)
 
 **Problem:**
 When running a single model with selection syntax like `dbt run -s bronze_d365__customerpackingslip`, users experienced a 3.2 second gap between concurrency setup and when the model actually started running. This time was consumed by information_schema queries even though dbt already knew which models to run. The issue is that dbt's default behavior caches metadata for all schemas in the database, scanning hundreds of tables that aren't relevant to the selected model.
@@ -331,7 +389,9 @@ Only caches schemas containing selected models.
 - ❌ `run_models()` - full run, uses full cache
 - ❌ `run_models(exclude="tag:deprecated")` - exclusion-only = broad run
 
-### 3. Persistent Manifest Loading (5s saved per operation)
+**Location:** [build_models.py](src/dbt_core_mcp/tools/build_models.py), [run_models.py](src/dbt_core_mcp/tools/run_models.py), [test_models.py](src/dbt_core_mcp/tools/test_models.py)
+
+### 4. Persistent Manifest Loading (5s saved per operation)
 
 **Problem:**
 dbt must parse all models/sources/tests before each operation. For 1471 models, this takes ~5 seconds.
@@ -350,7 +410,9 @@ Keep dbt process alive between operations. Manifest parsed once on startup, reus
 - `dbt ls` results cached in memory
 - Graceful shutdown on MCP server exit
 
-### 4. Warehouse Pre-warming (Databricks-specific)
+**Location:** [bridge_runner.py](src/dbt_core_mcp/dbt/bridge_runner.py)
+
+### 5. Warehouse Pre-warming (Databricks-specific)
 
 **Problem:**
 Databricks serverless warehouses auto-suspend after inactivity. When dbt tries to connect to a stopped warehouse, it appears to wait with long timeouts (likely from the databricks-sql-connector's retry and backoff logic) before the warehouse becomes available. This adds 30-60 seconds of startup time to the first operation where users see no progress feedback.

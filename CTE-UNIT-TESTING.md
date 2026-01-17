@@ -3,12 +3,13 @@
 ## Table of Contents
 1. [The Problem: Testing Complex SQL CTEs](#the-problem)
 2. [The Solution: Automated CTE Test Generation](#the-solution)
-3. [Technical Implementation](#technical-implementation)
-4. [Usage Guide](#usage-guide)
-5. [Design Decisions](#design-decisions)
-6. [Edge Cases and Robustness](#edge-cases)
-7. [Benefits and Trade-offs](#benefits-tradeoffs)
-8. [Proposal for dbt Standard](#proposal-for-dbt-standard)
+3. [CTE Query Tool: Debug Models Step-by-Step](#cte-query-tool)
+4. [Technical Implementation](#technical-implementation)
+5. [Usage Guide](#usage-guide)
+6. [Design Decisions](#design-decisions)
+7. [Edge Cases and Robustness](#edge-cases)
+8. [Benefits and Trade-offs](#benefits-tradeoffs)
+9. [Proposal for dbt Standard](#proposal-for-dbt-standard)
 
 ---
 
@@ -470,6 +471,351 @@ This works perfectly because:
 1. Generator runs `dbt compile` to resolve Jinja
 2. Tests run `dbt test` which also resolves Jinja
 3. Same Jinja → Same SQL → Consistent behavior
+
+### Data Type Handling
+
+---
+
+## CTE Query Tool: Debug Models Step-by-Step {#cte-query-tool}
+
+### The Debugging Problem
+
+When a dbt model fails or produces unexpected results, developers face a painful debugging workflow:
+
+1. **Manual CTE extraction**: Copy-paste CTE definitions from the model file
+2. **Dependency resolution**: Figure out which upstream CTEs are needed and extract those too
+3. **Template resolution**: Manually replace `{{ ref() }}` and `{{ source() }}` with actual table names
+4. **Query composition**: Wrap everything in a runnable query
+5. **Result inspection**: Execute and analyze output
+6. **Fixture creation**: If building unit tests, manually shape test data to match the CTE output
+
+This process is error-prone, time-consuming, and breaks flow state. It's especially painful when:
+- The CTE is deep in the transformation chain (requires many upstream CTEs)
+- The model uses complex Jinja templating
+- You're creating unit test fixtures and need realistic data shapes
+
+### The Solution: `query_database` with CTE Extraction
+
+The `query_database` tool can extract and query individual CTEs directly, handling all the complexity automatically:
+
+```python
+# Query a specific CTE with optional filtering
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="WHERE order_count > 5 LIMIT 10"
+)
+```
+
+**What happens**:
+1. Extracts `customer_agg` CTE and all its upstream dependencies from `customers.sql`
+2. Generates executable SQL: `WITH upstream_ctes..., customer_agg AS (...) SELECT * FROM customer_agg WHERE order_count > 5 LIMIT 10`
+3. Runs the query through `dbt show` (resolves all `{{ ref() }}` and `{{ source() }}` automatically)
+4. Returns the results formatted and ready to inspect
+
+### Natural Language Workflow
+
+**Via Copilot Chat**:
+
+> **You**: "Show me the customer_agg CTE from customers with order_count > 5"
+> 
+> **Copilot**: *Executes query and displays results*
+> ```
+> customer_id | order_count | total_amount
+> ------------|-------------|-------------
+> 123         | 10          | 1250.00
+> 456         | 8           | 890.50
+> ```
+
+> **You**: "Great, now use that to shape my unit test fixture"
+> 
+> **Copilot**: *Generates realistic test data based on the actual CTE output structure*
+> ```yaml
+> given:
+>   - input: ref('stg_orders')
+>     rows:
+>       - {customer_id: 123, order_id: 1, amount: 125.00}
+>       - {customer_id: 123, order_id: 2, amount: 125.00}
+>       # ... 8 more rows to match order_count: 10
+> ```
+
+### Key Features
+
+**1. Automatic Dependency Resolution**
+
+No need to manually figure out which CTEs are needed:
+
+```sql
+-- Your model has this chain:
+with base_customers as (...),
+     enriched_customers as (select * from base_customers),
+     customer_agg as (select * from enriched_customers)
+
+-- Just query the CTE you care about:
+query_database(cte_name="customer_agg", model_name="customers")
+
+-- Tool automatically includes base_customers and enriched_customers
+```
+
+**2. Template Resolution via dbt**
+
+All Jinja templating is handled by dbt's own compilation:
+
+```sql
+-- Your CTE uses refs and sources:
+customer_agg as (
+    select 
+        c.customer_id,
+        count(o.order_id) as order_count
+    from {{ ref('stg_customers') }} c
+    left join {{ source('raw', 'orders') }} o
+        on c.customer_id = o.customer_id
+    group by c.customer_id
+)
+
+-- Tool resolves these automatically at query time - you don't need to know the actual table names
+```
+
+**3. Optional SQL Composition**
+
+Apply filters, ordering, or limits without editing the model:
+
+```python
+# Just the CTE
+query_database(cte_name="customer_agg", model_name="customers")
+
+# With filtering
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="WHERE order_count > 10"
+)
+
+# With sorting and limiting
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="ORDER BY order_count DESC LIMIT 5"
+)
+
+# Complex filtering
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="WHERE order_count BETWEEN 5 AND 10 ORDER BY total_amount DESC"
+)
+```
+
+**4. Fast Feedback Loop**
+
+- First query: ~2s (manifest load)
+- Subsequent queries: < 1s (warm manifest)
+- No need to run the entire model
+- No need to modify the source file
+
+### Use Cases
+
+#### Use Case 1: Debug Data Quality Issues
+
+```python
+# Model produces wrong totals - which CTE is the problem?
+
+# Check first transformation:
+query_database(cte_name="base_orders", model_name="orders", sql="LIMIT 5")
+# ✓ Looks good
+
+# Check aggregation step:
+query_database(cte_name="order_agg", model_name="orders", sql="LIMIT 5")
+# ❌ Missing some orders - found the bug!
+```
+
+#### Use Case 2: Understand Complex Logic
+
+```python
+# New team member exploring a 10-CTE model
+
+# Start at the beginning:
+query_database(cte_name="filtered_events", model_name="user_analytics")
+
+# Walk through the chain:
+query_database(cte_name="sessionized_events", model_name="user_analytics")
+query_database(cte_name="session_metrics", model_name="user_analytics")
+query_database(cte_name="user_summary", model_name="user_analytics")
+
+# Each step shows the transformation clearly
+```
+
+#### Use Case 3: Create Realistic Test Fixtures
+
+```python
+# Building unit tests for customer_agg CTE
+
+# Query actual data to understand the shape:
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="WHERE order_count IN (0, 1, 5, 10) LIMIT 20"
+)
+
+# Results show:
+# - Customers with 0 orders (edge case)
+# - Customers with 1 order (common case)
+# - Customers with many orders (heavy user case)
+# - Actual column names and data types
+
+# Now write accurate fixtures:
+# given:
+#   - input: ref('stg_orders')
+#     rows:
+#       - {customer_id: 1, order_id: 100, amount: 50.00}  # Matches real schema
+#       - {customer_id: 1, order_id: 101, amount: 75.00}
+```
+
+#### Use Case 4: Validate Refactoring
+
+```python
+# Before refactoring customer_agg CTE, capture current output:
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="ORDER BY customer_id LIMIT 100",
+    output_file="temp_auto/customer_agg_before.csv",
+    output_format="csv"
+)
+
+# Refactor the CTE...
+
+# After refactoring, compare:
+query_database(
+    cte_name="customer_agg",
+    model_name="customers",
+    sql="ORDER BY customer_id LIMIT 100",
+    output_file="temp_auto/customer_agg_after.csv",
+    output_format="csv"
+)
+
+# Diff the CSVs - should be identical if refactoring was correct
+```
+
+### How It Works Under the Hood
+
+The `query_database` tool uses the same CTE extraction logic as the unit test generator:
+
+1. **Parse Model File**: Read the raw SQL from `models/{model_name}.sql`
+2. **Extract Target CTE**: Find the CTE definition by name
+3. **Trace Dependencies**: Recursively find all upstream CTEs referenced
+4. **Generate Query**: Compose SQL with all dependencies and a final `SELECT * FROM {cte_name}`
+5. **Apply User SQL**: If `sql` parameter provided, wrap as: `SELECT * FROM ({generated_query}) WHERE ...`
+6. **Execute via dbt**: Run through `dbt show --inline` (handles all template resolution)
+7. **Return Results**: Parse JSON output and format for display
+
+**Key Technical Details**:
+- Uses the CTE generator from `cte_generator.py` (same as unit test generation)
+- Parses raw SQL files (not compiled output) to extract CTEs
+- Writes to temporary file (system temp dir to avoid dbt detecting it as a model)
+- dbt's `show` command handles all `{{ ref() }}` and `{{ source() }}` resolution
+- Supports all output formats: JSON (default), CSV, TSV
+- Can save large results to files to avoid overwhelming the conversation
+
+### Integration with Unit Testing Workflow
+
+The CTE query tool complements the CTE unit test generator:
+
+**Step 1: Explore with queries**
+```python
+# Understand what customer_agg produces:
+query_database(cte_name="customer_agg", model_name="customers", sql="LIMIT 10")
+```
+
+**Step 2: Write unit test based on real data**
+```yaml
+unit_tests:
+  - name: test_customer_aggregation
+    model: customers::customer_agg
+    config:
+      cte_test: true
+      enabled: false
+    given:
+      - input: ref('stg_orders')
+        rows:  # Shaped from query results above
+          - {customer_id: 1, order_id: 100, amount: 50}
+          - {customer_id: 1, order_id: 101, amount: 75}
+    expect:
+      rows:  # Expected output matches query structure
+        - {customer_id: 1, order_count: 2, total_amount: 125}
+```
+
+**Step 3: Run tests** (generator creates isolated test automatically)
+```python
+test_models()
+```
+
+**The workflow loop**:
+- **Query** → Understand current behavior
+- **Test** → Document expected behavior
+- **Refactor** → Change implementation
+- **Query again** → Verify changes
+- **Test again** → Catch regressions
+
+### Performance Characteristics
+
+**Query Execution Time**:
+- First query: ~2s (manifest load + query execution)
+- Subsequent queries: < 1s (warm manifest, just query execution)
+- Much faster than running entire model (only executes the requested CTE chain)
+
+**When to Use**:
+- ✅ Debugging specific transformation steps
+- ✅ Understanding complex models
+- ✅ Creating realistic test fixtures
+- ✅ Validating refactoring changes
+- ✅ Exploring data shapes for new models
+
+**When NOT to Use**:
+- ❌ Final model output (just use `query_database(sql="SELECT * FROM {{ ref('model') }}")`)
+- ❌ Simple pass-through CTEs (not worth the overhead)
+- ❌ Models without CTEs (tool requires CTE syntax)
+
+### Comparison to Alternatives
+
+| Approach | Manual Extraction | dbt compile + manual query | query_database tool |
+|----------|------------------|---------------------------|---------------------|
+| **Extract CTE** | ✋ Manual copy-paste | ✋ Manual copy-paste | ✅ Automatic |
+| **Resolve dependencies** | ✋ Manual tracing | ✋ Manual tracing | ✅ Automatic |
+| **Resolve templates** | ✋ Manual replacement | ✅ dbt compile | ✅ dbt show (automatic) |
+| **Apply filters** | ✋ Edit SQL manually | ✋ Edit SQL manually | ✅ `sql` parameter |
+| **Cleanup** | ✋ Manual | ⚠️ Leaves compiled files | ✅ Automatic temp file cleanup |
+| **Time to result** | 5-10 minutes | 2-3 minutes | < 10 seconds |
+
+### Error Handling
+
+**Clear errors for common issues**:
+
+```python
+# CTE doesn't exist
+query_database(cte_name="nonexistent", model_name="customers")
+# Error: "CTE 'nonexistent' not found in model 'customers'"
+
+# Model doesn't exist
+query_database(cte_name="customer_agg", model_name="nonexistent")
+# Error: "Model file 'nonexistent.sql' not found in models directory"
+
+# Invalid SQL composition
+query_database(cte_name="customer_agg", model_name="customers", sql="INVALID SQL")
+# Error: "Query execution failed: [detailed dbt parser error]"
+```
+
+### Future Enhancements
+
+**Potential additions**:
+- **CTE dependency visualization**: Show which CTEs depend on which
+- **Diff mode**: Compare CTE output before/after changes automatically
+- **Sample data injection**: Override upstream CTEs with sample data (like unit test mocking)
+- **Performance profiling**: Show execution time per CTE in the chain
+
+---
+
+## Technical Implementation {#technical-implementation}
 
 ### Data Type Handling
 
