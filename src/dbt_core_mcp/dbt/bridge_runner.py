@@ -24,6 +24,26 @@ from .runner import DbtRunnerResult
 logger = logging.getLogger(__name__)
 
 
+def _get_action_verb(command: str) -> str:
+    """Map dbt command to user-friendly action verb for progress messages."""
+    command_map = {
+        "show": "Querying database",
+        "compile": "Compiling",
+        "parse": "Parsing",
+        "list": "Listing resources",
+        "ls": "Listing resources",
+        "debug": "Running diagnostics",
+        "deps": "Installing dependencies",
+        "build": "Building",
+        "test": "Testing",
+        "run": "Running",
+        "seed": "Seeding",
+        "snapshot": "Snapshotting",
+    }
+    # For commands not in the map, capitalize and use as-is
+    return command_map.get(command, command.capitalize() if command else "Executing")
+
+
 class BridgeRunner:
     """
     Execute dbt commands in user's environment via subprocess bridge.
@@ -270,7 +290,8 @@ class BridgeRunner:
         try:
             if progress_callback:
                 logger.info("Progress callback provided, enabling streaming output")
-                stdout, stderr = await self._stream_with_progress(self._dbt_process, progress_callback, expected_total)
+                command_name = args[0] if args else None
+                stdout, stderr = await self._stream_with_progress(self._dbt_process, progress_callback, expected_total, command_name)
             else:
                 logger.info("No progress callback, using buffered output")
                 # Read until we get the completion JSON
@@ -464,7 +485,8 @@ class BridgeRunner:
                 logger.info(f"Resetting progress bar, progress_callback exists: {progress_callback is not None}")
                 if progress_callback:
                     command = args[0] if args else ""
-                    reset_message = f"Starting dbt {command}..."
+                    action = _get_action_verb(command)
+                    reset_message = f"{action}..."
 
                     try:
                         logger.info(f"Invoking reset callback: 1/1000 - {reset_message}")
@@ -546,7 +568,8 @@ class BridgeRunner:
             dbt_execution_start = time.time()
             if progress_callback:
                 logger.info("Progress callback provided, enabling streaming output")
-                stdout, stderr = await self._stream_with_progress(proc, progress_callback, expected_total)
+                command_name = args[0] if args else None
+                stdout, stderr = await self._stream_with_progress(proc, progress_callback, expected_total, command_name)
             else:
                 logger.info("No progress callback, using buffered output")
                 # Wait for completion with timeout (original behavior)
@@ -613,7 +636,7 @@ class BridgeRunner:
                 await proc.wait()
             return DbtRunnerResult(success=False, exception=e, stdout="", stderr="")
 
-    async def _stream_with_progress(self, proc: asyncio.subprocess.Process, progress_callback: Callable[[int, int, str], Any], expected_total: int | None = None) -> tuple[str, str]:
+    async def _stream_with_progress(self, proc: asyncio.subprocess.Process, progress_callback: Callable[[int, int, str], Any], expected_total: int | None = None, command_name: str | None = None) -> tuple[str, str]:
         """
         Stream stdout/stderr and report progress in real-time.
 
@@ -625,6 +648,7 @@ class BridgeRunner:
             proc: The running subprocess
             progress_callback: Async callback(current, total, message)
             expected_total: Expected total number of resources
+            command_name: Optional dbt command name (e.g., "build", "test") for progress messages
 
         Returns:
             Tuple of (stdout, stderr) as strings
@@ -689,10 +713,11 @@ class BridgeRunner:
                     # Line pattern: "HH:MM:SS  Concurrency: N threads (target='...')"
                     if "Concurrency:" in line and "threads" in line and progress_callback:
                         try:
-                            result = progress_callback(1, 1000, "Executing...")
+                            exec_msg = _get_action_verb(command_name) if command_name else "Executing..."
+                            result = progress_callback(1, 1000, exec_msg)
                             if asyncio.iscoroutine(result):
                                 await result
-                            logger.info("Updated progress to 'Executing...'")
+                            logger.info(f"Updated progress to '{exec_msg}'")
                         except Exception as e:
                             logger.warning(f"Progress callback error on concurrency line: {e}")
 

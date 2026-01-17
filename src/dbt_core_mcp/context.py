@@ -13,11 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from typing_extensions import TypedDict
-
 import yaml
 from fastmcp import FastMCP
 from fastmcp.server.context import Context
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from .dbt.bridge_runner import BridgeRunner
