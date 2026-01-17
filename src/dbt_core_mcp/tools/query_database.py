@@ -310,11 +310,12 @@ async def query_database(
     - Use {{ source('source_name', 'table_name') }} to reference source tables
     - dbt compiles these to actual table names before execution
 
-    **CTE Querying**:
-    - Use cte_name and model_name to query individual CTEs from a model
-    - The tool extracts the CTE and all its upstream dependencies
-    - Compiles the extracted SQL to resolve refs/sources
-    - Optionally append additional SQL for filtering (WHERE, LIMIT, etc.)
+    **CTE Querying** (via parameters, NOT in SQL):
+    - Use cte_name="cte_name" and model_name="model_name" parameters (NOT inside the SQL string)
+    - The tool extracts the CTE and all its upstream dependencies from the model file
+    - Handles all {{ ref() }} and {{ source() }} resolution automatically
+    - The 'sql' parameter becomes optional additional filtering (WHERE, ORDER BY, LIMIT)
+    - IMPORTANT: Do NOT use {{ ref('model', cte='cte_name') }} - that syntax does not exist
 
     **Output Management**:
     - For large result sets (>100 rows), use output_file to save results
@@ -330,7 +331,8 @@ async def query_database(
     Args:
         sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
              For exploratory queries, include LIMIT. For aggregations/counts, omit it.
-             When querying a CTE, this can be additional SQL to append (e.g., "WHERE x > 10 LIMIT 5")
+             When using cte_name/model_name parameters, this becomes OPTIONAL additional SQL
+             to append after the CTE (e.g., "WHERE x > 10 LIMIT 5" or just "LIMIT 10")
         output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
                     If provided, only metadata is returned (no preview for CSV/TSV).
                     If omitted, all data is returned inline (may consume large context).
@@ -372,6 +374,12 @@ async def query_database(
             model_name="customers",
             sql="WHERE order_count > 5 LIMIT 20"
         )
+
+        # WRONG - Do NOT use ref() with cte parameter (does not exist):
+        # query_database(sql="SELECT * FROM {{ ref('model', cte='cte_name') }}")
+        #
+        # CORRECT - Use cte_name and model_name parameters instead:
+        # query_database(cte_name="cte_name", model_name="model", sql="LIMIT 10")
 
         # Save large results to file
         query_database(
