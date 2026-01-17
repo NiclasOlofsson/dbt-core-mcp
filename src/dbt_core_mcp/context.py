@@ -11,7 +11,9 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from typing_extensions import TypedDict
 
 import yaml
 from fastmcp import FastMCP
@@ -22,6 +24,21 @@ if TYPE_CHECKING:
     from .dbt.manifest import ManifestLoader
 
 logger = logging.getLogger(__name__)
+
+
+# TypedDict with hyphenated keys requires functional syntax
+ProjectPaths = TypedDict(
+    "ProjectPaths",
+    {
+        "model-paths": list[str],
+        "seed-paths": list[str],
+        "snapshot-paths": list[str],
+        "analysis-paths": list[str],
+        "macro-paths": list[str],
+        "test-paths": list[str],
+        "target-path": str,
+    },
+)
 
 
 @dataclass
@@ -271,7 +288,8 @@ class DbtCoreServerContext:
         if not self.project_dir or not self.runner:
             return
 
-        state_dir = self.project_dir / "target" / "state_last_run"
+        target_path = self.get_project_paths()["target-path"]
+        state_dir = self.project_dir / target_path / "state_last_run"
         state_dir.mkdir(parents=True, exist_ok=True)
 
         manifest_path = self.runner.get_manifest_path()  # type: ignore
@@ -282,18 +300,18 @@ class DbtCoreServerContext:
         except OSError as e:
             logger.warning(f"Failed to save execution state: {e}")
 
-    def get_project_paths(self) -> dict[str, list[str]]:
+    def get_project_paths(self) -> ProjectPaths:
         """Read configured paths from dbt_project.yml.
 
         Returns:
-            Dictionary with path types as keys and lists of paths as values
+            Dictionary with path types as keys and path values (lists for most, string for target-path)
         """
         if not self.project_dir:
-            return {}
+            return cast(ProjectPaths, {})
 
         project_file = self.project_dir / "dbt_project.yml"
         if not project_file.exists():
-            return {}
+            return cast(ProjectPaths, {})
 
         try:
             with open(project_file, encoding="utf-8") as f:
@@ -306,10 +324,11 @@ class DbtCoreServerContext:
                 "analysis-paths": config.get("analysis-paths", ["analyses"]),
                 "macro-paths": config.get("macro-paths", ["macros"]),
                 "test-paths": config.get("test-paths", ["tests"]),
+                "target-path": config.get("target-path", "target"),
             }
         except Exception as e:
             logger.warning(f"Failed to parse dbt_project.yml: {e}")
-            return {}
+            return cast(ProjectPaths, {})
 
     def compare_model_schemas(
         self,
@@ -390,7 +409,8 @@ class DbtCoreServerContext:
         """
         if self.project_dir is None:
             return False
-        manifest_path = self.project_dir / "target" / "manifest.json"
+        target_path = self.get_project_paths()["target-path"]
+        manifest_path = self.project_dir / target_path / "manifest.json"
         return manifest_path.exists()
 
     async def prepare_state_based_selection(
@@ -430,7 +450,8 @@ class DbtCoreServerContext:
         if not self.project_dir:
             return None
 
-        state_dir = self.project_dir / "target" / "state_last_run"
+        target_path = self.get_project_paths()["target-path"]
+        state_dir = self.project_dir / target_path / "state_last_run"
         if not state_dir.exists():
             # No state - cannot determine modifications
             return None

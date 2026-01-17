@@ -49,7 +49,8 @@ async def _implementation(
         args.append("--cache-selected-only")
 
     if selector:
-        args.extend(["-s", selector, "--state", "target/state_last_run"])
+        target_path = state.get_project_paths().get("target-path", "target")
+        args.extend(["-s", selector, "--state", f"{target_path}/state_last_run"])
     elif select:
         args.extend(["-s", select])
 
@@ -71,7 +72,8 @@ async def _implementation(
 
         if select_state_modified:
             selector = "state:modified+" if select_state_modified_plus_downstream else "state:modified"
-            list_args.extend(["-s", selector, "--state", "target/state_last_run"])
+            target_path = state.get_project_paths().get("target-path", "target")
+            list_args.extend(["-s", selector, "--state", f"{target_path}/state_last_run"])
         elif select:
             list_args.extend(["-s", select])
 

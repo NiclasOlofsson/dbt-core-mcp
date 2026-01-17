@@ -48,9 +48,13 @@ class BridgeRunner:
         self.python_command = python_command
         self.timeout = timeout
         self.use_persistent_process = use_persistent_process
-        self._target_dir = self.project_dir / "target"
         self._project_config: dict[str, Any] | None = None  # Lazy-loaded project configuration
         self._project_config_mtime: float | None = None  # Track last modification time
+
+        # Get target-path from config (lazy-load happens in _get_project_config)
+        config = self._get_project_config()
+        target_path = config.get("target-path", "target")
+        self._target_dir = self.project_dir / target_path
 
         # Detect profiles directory (project dir or ~/.dbt)
         self.profiles_dir = self.project_dir if (self.project_dir / "profiles.yml").exists() else Path.home() / ".dbt"

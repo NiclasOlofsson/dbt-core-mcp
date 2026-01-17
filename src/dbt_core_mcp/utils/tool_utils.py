@@ -271,6 +271,7 @@ def get_project_paths(project_dir: Path | None) -> dict[str, list[str]]:
             "analysis-paths": config.get("analysis-paths", ["analyses"]),
             "macro-paths": config.get("macro-paths", ["macros"]),
             "test-paths": config.get("test-paths", ["tests"]),
+            "target-path": config.get("target-path", "target"),
         }
     except Exception as e:
         logger.warning(f"Failed to parse dbt_project.yml: {e}")

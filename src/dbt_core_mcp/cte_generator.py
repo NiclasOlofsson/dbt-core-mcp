@@ -419,6 +419,26 @@ def generate_cte_test(
     return True
 
 
+def _load_project_config(project_dir: Path) -> dict[str, Any]:
+    """Load dbt_project.yml configuration.
+
+    Args:
+        project_dir: Path to dbt project root
+
+    Returns:
+        Dict with project configuration
+    """
+    project_file = project_dir / "dbt_project.yml"
+    if not project_file.exists():
+        logger.warning(f"dbt_project.yml not found at {project_file}, using defaults")
+        return {}
+
+    with open(project_file) as f:
+        config = yaml.safe_load(f)
+
+    return config or {}
+
+
 def generate_cte_tests(project_dir: Path) -> int:
     """Scan project and generate all CTE tests.
 
@@ -430,13 +450,35 @@ def generate_cte_tests(project_dir: Path) -> int:
     """
     logger.info("Generating CTE tests...")
 
-    # Paths
-    unit_tests_dir = project_dir / "unit_tests"
-    models_dir = project_dir / "models"
+    # Load project configuration
+    config = _load_project_config(project_dir)
 
-    # Output directories
-    gen_models_dir = project_dir / "models/marts/__cte_tests"
-    gen_tests_dir = project_dir / "unit_tests/marts/__cte_tests"
+    # Get configured paths (use first element if multiple)
+    test_paths = config.get("test-paths", ["tests"])
+    model_paths = config.get("model-paths", ["models"])
+
+    # For unit tests, check both test-paths and unit_tests directory
+    # (unit_tests is a common convention even if not in test-paths)
+    unit_tests_dirs = []
+    for test_path in test_paths:
+        unit_tests_dirs.append(project_dir / test_path)
+    # Also check for unit_tests directory as fallback
+    if (project_dir / "unit_tests").exists():
+        unit_tests_dirs.append(project_dir / "unit_tests")
+
+    # Use first model path for generated models
+    models_dir = project_dir / model_paths[0]
+
+    # Output directories (generated files go in first model path and preferred test path)
+    gen_models_dir = project_dir / model_paths[0] / "marts" / "__cte_tests"
+
+    # Determine output test directory:
+    # - If unit_tests exists, use it (common convention)
+    # - Otherwise use first configured test path
+    if (project_dir / "unit_tests").exists():
+        gen_tests_dir = project_dir / "unit_tests" / "marts" / "__cte_tests"
+    else:
+        gen_tests_dir = project_dir / test_paths[0] / "marts" / "__cte_tests"
 
     # Clean up old generated files
     if gen_models_dir.exists():
@@ -446,8 +488,11 @@ def generate_cte_tests(project_dir: Path) -> int:
         shutil.rmtree(gen_tests_dir)
         logger.debug(f"Cleaned up {gen_tests_dir}")
 
-    # Discover all unit test YAML files
-    test_files = list(unit_tests_dir.rglob("*_unit_tests.yml"))
+    # Discover all unit test YAML files from all test directories
+    test_files = []
+    for unit_tests_dir in unit_tests_dirs:
+        if unit_tests_dir.exists():
+            test_files.extend(list(unit_tests_dir.rglob("*_unit_tests.yml")))
     logger.debug(f"Found {len(test_files)} unit test files")
 
     cte_tests_found = 0
@@ -473,8 +518,24 @@ def generate_cte_tests(project_dir: Path) -> int:
                 test_hash = hashlib.md5(test_name.encode()).hexdigest()[:6]
 
                 # Determine model file path from test file structure
-                # Assume tests mirror model structure: unit_tests/marts/X.yml -> models/marts/X.sql
-                relative_path = test_file.relative_to(unit_tests_dir)
+                # Find which test directory this file belongs to
+                test_dir = None
+                for candidate_dir in unit_tests_dirs:
+                    try:
+                        # Check if test_file is relative to this directory
+                        relative_path = test_file.relative_to(candidate_dir)
+                        test_dir = candidate_dir
+                        break
+                    except ValueError:
+                        # Not relative to this directory, try next
+                        continue
+
+                if not test_dir:
+                    logger.warning(f"Could not determine test directory for {test_file}")
+                    continue
+
+                # Assume tests mirror model structure: <test_dir>/marts/X.yml -> models/marts/X.sql
+                relative_path = test_file.relative_to(test_dir)
                 model_subdir = relative_path.parent
                 model_file = models_dir / model_subdir / f"{base_model}.sql"
 

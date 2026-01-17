@@ -4,6 +4,7 @@ Tests for query_database tool.
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -26,6 +27,16 @@ def mock_state() -> Mock:
         return sql
 
     state.compile_jinja = AsyncMock(side_effect=compile_jinja)
+
+    # Mock get_project_paths to return default paths
+    def get_project_paths() -> dict[str, Any]:
+        return {
+            "model-paths": ["models"],
+            "test-paths": ["tests"],
+            "target-path": "target",
+        }
+
+    state.get_project_paths = get_project_paths
 
     # Mock runner with invoke_query method
     mock_runner = Mock()

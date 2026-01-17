@@ -49,7 +49,8 @@ async def _implementation(
         args.append("--cache-selected-only")
 
     if selector:
-        args.extend(["-s", selector, "--state", "target/state_last_run"])
+        target_path = state.get_project_paths().get("target-path", "target")
+        args.extend(["-s", selector, "--state", f"{target_path}/state_last_run"])
     elif select:
         args.extend(["-s", select])
 

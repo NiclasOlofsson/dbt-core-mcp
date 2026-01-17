@@ -28,6 +28,7 @@ def extract_cte_sql(
     cte_name: str,
     model_name: str,
     additional_sql: str = "",
+    model_paths: list[str] | None = None,
 ) -> str:
     """Extract CTE SQL from a model file and optionally append additional SQL.
 
@@ -39,6 +40,7 @@ def extract_cte_sql(
         cte_name: Name of the CTE to extract
         model_name: Name of the model file containing the CTE (without .sql extension)
         additional_sql: Optional SQL to append (e.g., "WHERE x > 10 LIMIT 5")
+        model_paths: List of model directory paths (defaults to ["models"])
 
     Returns:
         Complete SQL ready to execute (either the extracted CTE or wrapped with additional SQL)
@@ -58,12 +60,20 @@ def extract_cte_sql(
             "WHERE order_count > 5 LIMIT 10"
         )
     """
-    # Find the model file
-    models_dir = project_dir / "models"
-    model_files = list(models_dir.rglob(f"{model_name}.sql"))
+    # Use default model_paths if not provided
+    if model_paths is None:
+        model_paths = ["models"]
+
+    # Find the model file - search all configured model paths
+    model_files = []
+    for model_path in model_paths:
+        models_dir = project_dir / model_path
+        if models_dir.exists():
+            model_files.extend(list(models_dir.rglob(f"{model_name}.sql")))
 
     if not model_files:
-        raise ValueError(f"Model file '{model_name}.sql' not found in models directory")
+        paths_searched = ", ".join(model_paths)
+        raise ValueError(f"Model file '{model_name}.sql' not found in any model paths: {paths_searched}")
 
     if len(model_files) > 1:
         raise ValueError(f"Multiple model files found for '{model_name}': {[str(f) for f in model_files]}")
@@ -155,12 +165,16 @@ async def _implementation(
         if not state.project_dir:
             raise ValueError("Project directory not initialized")
 
+        # Get configured model paths
+        model_paths = state.get_project_paths()["model-paths"]
+
         # Extract CTE SQL using the dedicated function
         sql = extract_cte_sql(
             project_dir=state.project_dir,
             cte_name=cte_name,
             model_name=model_name,
             additional_sql=sql,
+            model_paths=model_paths,
         )
 
     # Execute query using dbt show with --no-populate-cache for optimal performance
