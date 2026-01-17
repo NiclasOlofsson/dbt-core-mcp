@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <script>
+        // ===== STATE =====
+        const state = {
+            nextId: 1,
+            hostContext: null,
+            toolInput: null,
+            lastSize: { width: 0, height: 0 },
+            savedTheme: {}
+        };
+
+        const STORAGE = {
+            RELOAD_COUNT: 'mcpApp.reloadCount',
+            THEME: 'mcpApp.themeFallbacks'
+        };
+
+        // ===== THEME MANAGEMENT =====
+        const Theme = {
+            isResolved(value) {
+                if (!value?.trim()) return false;
+                if (value.startsWith('var(')) return false;
+                return value.startsWith('#') || value.startsWith('rgb') || value.startsWith('hsl');
+            },
+
+            save(variables) {
+                try {
+                    const resolved = Object.fromEntries(
+                        Object.entries(variables).filter(([_, v]) => this.isResolved(v))
+                    );
+                    const count = Object.keys(resolved).length;
+                    if (count > 0) {
+                        sessionStorage.setItem(STORAGE.THEME, JSON.stringify(resolved));
+                        console.log(`💾 Saved ${count} theme variables`);
+                    }
+                    return count;
+                } catch (error) {
+                    console.error('Failed to save theme:', error);
+                    return 0;
+                }
+            },
+
+            restore() {
+                try {
+                    const stored = sessionStorage.getItem(STORAGE.THEME);
+                    if (stored) {
+                        const theme = JSON.parse(stored);
+                        const count = Object.keys(theme).length;
+                        if (count > 0) {
+                            console.log(`✅ Restored ${count} theme variables`);
+                            return theme;
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to restore theme:', error);
+                }
+                return null;
+            },
+
+            apply(variables) {
+                const root = document.documentElement;
+                Object.entries(variables).forEach(([key, value]) => {
+                    root.style.setProperty(key, value);
+                });
+            },
+
+            resolveFromHost(hostVariables) {
+                const root = document.documentElement;
+                const resolved = {};
+                let count = 0;
+
+                Object.entries(hostVariables).forEach(([key, value]) => {
+                    const computed = getComputedStyle(root).getPropertyValue(key).trim();
+                    if (this.isResolved(computed)) {
+                        resolved[key] = computed;
+                        root.style.setProperty(key, computed);
+                        count++;
+                    }
+                });
+
+                return { resolved, count };
+            }
+        };
+
+        // ===== LOGGING =====
+        const Logger = {
+            types: {
+                out: { class: 'log-out', arrow: '→', label: 'TO HOST' },
+                in: { class: 'log-in', arrow: '←', label: 'FROM HOST' },
+                system: { class: 'log-system', arrow: 'ℹ️', label: 'SYSTEM' }
+            },
+
+            log(type, message) {
+                const log = document.getElementById('log');
+                if (!log) return;
+
+                const config = this.types[type];
+                const entry = document.createElement('div');
+                entry.className = config.class;
+                entry.innerHTML = `
+                    <div class="log-header">${new Date().toLocaleTimeString()} ${config.arrow} ${config.label}</div>
+                    <pre>${JSON.stringify(message, null, 2)}</pre>
+                `;
+                log.appendChild(entry);
+                log.scrollTop = log.scrollHeight;
+            }
+        };
+
+        // ===== SIZE MANAGEMENT =====
+        const SizeManager = {
+            update() {
+                const viewportHeight = window.innerHeight;
+                const maxHeight = Math.floor(viewportHeight * 0.4);
+                const currentHeight = document.body.scrollHeight;
+                const reloadCount = parseInt(sessionStorage.getItem(STORAGE.RELOAD_COUNT) || '0');
+
+                document.getElementById('viewport-height').textContent = viewportHeight;
+                document.getElementById('max-height').textContent = maxHeight;
+                document.getElementById('current-size').textContent = currentHeight;
+                document.getElementById('init-count').textContent = reloadCount;
+            },
+
+            notify() {
+                const width = document.body.scrollWidth;
+                const height = document.body.scrollHeight;
+
+                this.update();
+
+                if (width !== state.lastSize.width || height !== state.lastSize.height) {
+                    state.lastSize = { width, height };
+                    window.parent.postMessage({
+                        jsonrpc: "2.0",
+                        method: "ui/notifications/size-changed",
+                        params: { width, height }
+                    }, '*');
+                }
+            }
+        };
+
+        // ===== MESSAGING =====
+        const Messenger = {
+            request(method, params) {
+                const id = state.nextId++;
+                const message = { jsonrpc: "2.0", id, method, params };
+                Logger.log('out', message);
+                window.parent.postMessage(message, '*');
+                return id;
+            },
+
+            notification(method, params) {
+                const message = { jsonrpc: "2.0", method, params };
+                Logger.log('out', message);
+                window.parent.postMessage(message, '*');
+            }
+        };
+
+        // ===== STYLE RESOLUTION =====
+        function handleStyleResolution(hostVariables) {
+            // Apply host variables first
+            Theme.apply(hostVariables);
+
+            // Check resolution after 100ms
+            setTimeout(() => {
+                const { resolved, count } = Theme.resolveFromHost(hostVariables);
+
+                if (count > 0) {
+                    // SUCCESS - Real styles resolved
+                    state.savedTheme = resolved;
+                    Theme.save(resolved);
+                    sessionStorage.setItem(STORAGE.RELOAD_COUNT, '1');
+                    SizeManager.update();
+                    
+                    document.body.classList.add('visible');
+                    console.log('✅ Styles resolved - content shown');
+                    Logger.log('system', { 
+                        type: 'system', 
+                        message: `✅ Resolved ${count} theme variables` 
+                    });
+                } else {
+                    // FLICKERING - Try cache
+                    handleFlickering();
+                }
+            }, 100);
+
+            Logger.log('system', {
+                type: 'system',
+                message: `Applied ${Object.keys(hostVariables).length} theme variables from host`
+            });
+        }
+
+        function handleFlickering() {
+            const reloadCount = parseInt(sessionStorage.getItem(STORAGE.RELOAD_COUNT) || '0') + 1;
+            sessionStorage.setItem(STORAGE.RELOAD_COUNT, reloadCount.toString());
+            SizeManager.update();
+
+            console.warn(`⚠️ Flickering detected - reload #${reloadCount}`);
+
+            const cached = Theme.restore();
+            if (cached && Object.keys(cached).length > 0) {
+                // Apply cache and wait
+                Theme.apply(cached);
+                state.savedTheme = cached;
+
+                setTimeout(() => {
+                    document.body.classList.add('visible');
+                    console.log('✅ Content shown after flickering');
+                }, 2000);
+
+                Logger.log('system', {
+                    type: 'system',
+                    message: `♻️ Flickering - applied ${Object.keys(cached).length} cached variables`
+                });
+            } else {
+                // No cache - show anyway with delay
+                console.error('❌ Flickering with no cache!');
+                
+                setTimeout(() => {
+                    document.body.classList.add('visible');
+                    console.warn('⚠️ Content shown without proper styles');
+                }, 2000);
+
+                Logger.log('system', {
+                    type: 'error',
+                    message: '❌ Flickering with no cache - may not render correctly'
+                });
+            }
+        }
+
+        // ===== MESSAGE HANDLERS =====
+        function handleResponse(message) {
+            if (!message.result?.hostContext) return;
+
+            state.hostContext = message.result.hostContext;
+            
+            // Send initialized notification
+            Messenger.notification("ui/notifications/initialized", {});
+
+            // Handle theme
+            if (state.hostContext.styles?.variables) {
+                handleStyleResolution(state.hostContext.styles.variables);
+            }
+        }
+
+        function handleNotification(message) {
+            if (message.method === 'ui/notifications/tool-input') {
+                state.toolInput = message.params.arguments;
+            }
+            
+            if (message.method === 'ui/notifications/shutdown') {
+                Logger.log('system', { 
+                    type: 'system', 
+                    message: 'Received shutdown notification' 
+                });
+            }
+        }
+
+        // ===== INITIALIZATION =====
+        function initialize() {
+            console.log('🔄 Initialize called');
+            SizeManager.update();
+
+            Logger.log('system', { 
+                type: 'system', 
+                message: 'MCP App starting initialization...' 
+            });
+
+            Messenger.request("ui/initialize", {
+                capabilities: {},
+                clientInfo: { name: "dbt-demo-ui", version: "1.0.0" },
+                protocolVersion: "2025-06-18"
+            });
+
+            // Size observer
+            new ResizeObserver(() => SizeManager.notify()).observe(document.body);
+            window.addEventListener('resize', SizeManager.update);
+        }
+
+        // ===== EVENT LISTENERS =====
+        window.addEventListener('message', event => {
+            const message = event.data;
+            Logger.log('in', message);
+
+            if (message.jsonrpc === "2.0" && message.id) {
+                handleResponse(message);
+            }
+
+            if (message.jsonrpc === "2.0" && message.method) {
+                handleNotification(message);
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', initialize);
+    </script>
+    <style>
+        * { box-sizing: border-box; }
+        
+        html, body { margin: 0; padding: 0; height: auto; }
+
+        body {
+            padding: 0;
+            font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+            font-size: var(--font-text-md-size, 13px);
+            color: var(--color-text-primary, magenta);
+            background: transparent;
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out;
+        }
+
+        body.visible { opacity: 1; }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: var(--font-heading-md-size, 20px);
+            font-weight: var(--font-weight-semibold, 600);
+            color: var(--color-text-primary, magenta);
+        }
+
+        p {
+            margin: 0 0 16px;
+            color: var(--color-text-secondary, yellow);
+        }
+
+        #size-info {
+            background: var(--color-background-secondary, #ff1493);
+            border: var(--border-width-regular, 1px) solid var(--color-border-primary, red);
+            border-radius: var(--border-radius-lg, 6px);
+            padding: 12px;
+            margin-bottom: 16px;
+            font-family: var(--font-mono, monospace);
+            font-size: var(--font-text-sm-size, 11px);
+        }
+
+        #size-info div { margin: 4px 0; }
+        #size-info strong { color: var(--color-text-primary, magenta); }
+        #size-info span { color: var(--color-text-success, lime); }
+
+        #log {
+            background: var(--color-background-secondary, #ff1493);
+            border: var(--border-width-regular, 1px) solid var(--color-border-primary, red);
+            border-radius: var(--border-radius-lg, 6px);
+            padding: 12px;
+        }
+
+        .log-out, .log-in, .log-system {
+            margin-bottom: 12px;
+            padding: 8px;
+            border-radius: var(--border-radius-md, 4px);
+        }
+
+        .log-out {
+            background: var(--color-background-info, #8b00ff);
+            border-left: 3px solid var(--color-border-info, cyan);
+        }
+
+        .log-in {
+            background: rgba(115, 201, 145, 0.1);
+            border-left: 3px solid var(--color-border-success, lime);
+        }
+
+        .log-system {
+            background: rgba(128, 128, 128, 0.1);
+            border-left: 3px solid var(--color-border-secondary, gray);
+        }
+
+        .log-header {
+            font-size: var(--font-text-xs-size, 10px);
+            font-weight: var(--font-weight-semibold, 600);
+            margin-bottom: 4px;
+            color: var(--color-text-secondary, yellow);
+        }
+
+        .log-out .log-header { color: var(--color-text-primary, magenta); }
+        .log-in .log-header { color: var(--color-text-success, lime); }
+
+        pre {
+            margin: 0;
+            font-family: var(--font-mono, 'Consolas', 'Monaco', monospace);
+            font-size: var(--font-text-xs-size, 10px);
+            color: var(--color-text-primary, magenta);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <h1>MCP Apps Protocol Monitor 📡</h1>
+    <p>Self-logging JSON-RPC message viewer</p>
+
+    <div id="size-info">
+        <div><strong>Viewport Height:</strong> <span id="viewport-height">-</span>px</div>
+        <div><strong>40% Max (40vh):</strong> <span id="max-height">-</span>px</div>
+        <div><strong>Current Body Size:</strong> <span id="current-size">-</span>px</div>
+        <div><strong>Initialization Count:</strong> <span id="init-count">0</span></div>
+    </div>
+
+    <div id="log"></div>
+</body>
+</html>

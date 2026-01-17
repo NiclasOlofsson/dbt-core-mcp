@@ -32,8 +32,11 @@ def setup_logging(debug: bool = False) -> None:
     root_logger.setLevel(level)
     root_logger.addHandler(stderr_handler)
 
-    # Suppress FastMCP's internal INFO logs (they use structlog formatting)
-    logging.getLogger("fastmcp").setLevel(logging.WARNING)
+    # Suppress FastMCP's internal INFO logs unless debug is enabled
+    fastmcp_level = logging.DEBUG if debug else logging.WARNING
+    logging.getLogger("fastmcp").setLevel(fastmcp_level)
+    logging.getLogger("fakeredis").setLevel(logging.WARNING)
+    logging.getLogger("docket").setLevel(logging.WARNING)
 
     # Add file logging
     try:

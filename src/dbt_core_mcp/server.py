@@ -146,6 +146,8 @@ class DbtCoreMcpServer:
 
         # Register tools dynamically
         self._register_tools()
+        # Register resources
+        self._register_resources()
 
         logger.info("dbt Core MCP Server initialized")
         logger.info(f"Profiles directory: {self.profiles_dir}")
@@ -159,11 +161,50 @@ class DbtCoreMcpServer:
 
     def _register_tools(self) -> None:
         """Dynamically register all dbt Core MCP tools."""
-        from .tools import discover_tools_in_package
+        from .tools import discover_tools_in_package, get_tool_metadata
 
         tool_functions = discover_tools_in_package("dbt_core_mcp.tools")
         for tool_func in tool_functions:
-            self.app.tool()(tool_func)
+            metadata = get_tool_metadata(tool_func, default=None)
+            if metadata:
+                allowed_keys = {
+                    "name",
+                    "description",
+                    "tags",
+                    "enabled",
+                    "icons",
+                    "annotations",
+                    "meta",
+                }
+                tool_kwargs = {key: value for key, value in metadata.items() if key in allowed_keys}
+                self.app.tool(**tool_kwargs)(tool_func)
+                logger.info("Registered tool metadata for %s: %s", tool_func.__name__, metadata)
+            else:
+                self.app.tool()(tool_func)
+
+    def _register_resources(self) -> None:
+        demo_html_path = Path(__file__).resolve().parent / "tools" / "demo" / "hello.html"
+
+        # Register MCP UI resource for demo_ui tool.
+        # It is CRITICAL for vscode that it is resource:// and not ui://
+        @self.app.resource(
+            uri="resource://demo/hello",
+            name="Demo UI",
+            mime_type="text/html;profile=mcp-app",
+        )
+        def demo_ui() -> str:
+            logger.info("Serving MCP UI resource: resource://demo/hello")
+            return demo_html_path.read_text(encoding="utf-8")
+
+        # Also register with ui:// for compatibility (VS Code may request either)
+        @self.app.resource(
+            uri="ui://demo/hello",
+            name="Demo UI (Legacy)",
+            mime_type="text/html;profile=mcp-app",
+        )
+        def demo_ui_legacy() -> str:
+            logger.info("Serving MCP UI resource: ui://demo/hello")
+            return demo_html_path.read_text(encoding="utf-8")
 
     # (Removed) Legacy toolImpl_* wrappers: tools are now auto-discovered via FileSystemProvider
 
