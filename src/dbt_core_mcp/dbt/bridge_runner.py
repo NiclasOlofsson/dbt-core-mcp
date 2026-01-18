@@ -189,6 +189,8 @@ class BridgeRunner:
             dbt_log_dir = Path(tempfile.gettempdir()) / f"dbt_mcp_logs_{project_hash}"
             dbt_log_dir.mkdir(parents=True, exist_ok=True)
             env["DBT_LOG_PATH"] = str(dbt_log_dir)
+            # Disable log file rotation to prevent Windows file locking issues
+            env["DBT_MAX_LOG_FILE_SIZE"] = "0"  # Disable rotation by size
 
         # Start process
         self._dbt_process = await asyncio.create_subprocess_exec(
