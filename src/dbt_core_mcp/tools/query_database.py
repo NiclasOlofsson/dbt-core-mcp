@@ -117,7 +117,13 @@ def extract_cte_sql(
             additional_sql_stripped = additional_sql.strip() if additional_sql else ""
             if additional_sql_stripped:
                 if not re.match(r"^(select|with)\b", additional_sql_stripped, flags=re.IGNORECASE):
-                    raise ValueError("additional_sql must be a full SELECT/WITH query when querying a CTE")
+                    # Construct the correct query from the partial SQL provided
+                    suggested_query = f"SELECT * FROM __cte__ {additional_sql_stripped}"
+                    raise ValueError(f"additional_sql must be a full SELECT/WITH query when querying a CTE. Did you mean: {suggested_query}")
+
+                # Ensure the query references the CTE via __cte__ or {{ cte }}
+                if not re.search(r"__cte__|{{\s*cte\s*}}", additional_sql_stripped, flags=re.IGNORECASE):
+                    raise ValueError("additional_sql must reference the CTE using __cte__ or {{ cte }}. Example: SELECT * FROM __cte__ WHERE <condition>")
 
                 pattern = rf"select \* from {re.escape(cte_name)}$"
                 query_sql = re.sub(r"\{\{\s*cte\s*\}\}", cte_name, additional_sql_stripped, flags=re.IGNORECASE)
