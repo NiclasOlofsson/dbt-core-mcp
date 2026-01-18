@@ -30,34 +30,40 @@ def extract_cte_sql(
     additional_sql: str = "",
     model_paths: list[str] | None = None,
 ) -> str:
-    """Extract CTE SQL from a model file and optionally append additional SQL.
+    """Extract CTE SQL from a model file and optionally replace the final SELECT.
 
     This function extracts a specific CTE from a dbt model file, resolves all its
-    upstream dependencies, and optionally appends user-provided SQL for filtering.
+    upstream dependencies, and optionally replaces the final SELECT with a full query.
 
     Args:
         project_dir: Path to the dbt project directory
         cte_name: Name of the CTE to extract
         model_name: Name of the model file containing the CTE (without .sql extension)
-        additional_sql: Optional SQL to append (e.g., "WHERE x > 10 LIMIT 5")
+        additional_sql: Optional full SELECT/WITH query to replace the final SELECT
+            (use __cte__ or {{ cte }}; replaced with the CTE name at execution)
         model_paths: List of model directory paths (defaults to ["models"])
 
     Returns:
-        Complete SQL ready to execute (either the extracted CTE or wrapped with additional SQL)
+        Complete SQL ready to execute (either the extracted CTE or replaced with full SQL)
 
     Raises:
         ValueError: If model file not found, multiple files found, or CTE extraction fails
 
     Examples:
-        # Extract a CTE without additional SQL
-        sql = extract_cte_sql(project_dir, "customer_agg", "customers")
-
-        # Extract a CTE with filtering
+        # Extract a CTE with a full SELECT
         sql = extract_cte_sql(
             project_dir,
             "customer_agg",
             "customers",
-            "WHERE order_count > 5 LIMIT 10"
+            "SELECT * FROM __cte__ WHERE order_count > 5 LIMIT 10"
+        )
+
+        # Extract a CTE and replace final SELECT
+        sql = extract_cte_sql(
+            project_dir,
+            "customer_agg",
+            "customers",
+            "SELECT customer_id, COUNT(*) AS cnt FROM __cte__ GROUP BY customer_id"
         )
     """
     # Use default model_paths if not provided
@@ -105,14 +111,17 @@ def extract_cte_sql(
             # Remove the sqlfluff disable comment if present
             cte_sql = re.sub(r"^-- sqlfluff:disable\s*\n", "", cte_sql, flags=re.MULTILINE)
 
-            # If user provided additional SQL, replace the final SELECT with a subquery
+            # If user provided additional SQL, require a full SELECT/WITH query
             # The CTE extraction already includes "select * from {cte_name}" at the end
-            if additional_sql and additional_sql.strip():
-                # Replace "select * from {cte_name}" with "select * from ({original_cte}) as _cte {additional_sql}"
-                # This allows appending WHERE, ORDER BY, LIMIT, etc.
+            additional_sql_stripped = additional_sql.strip() if additional_sql else ""
+            if additional_sql_stripped:
+                if not re.match(r"^(select|with)\b", additional_sql_stripped, flags=re.IGNORECASE):
+                    raise ValueError("additional_sql must be a full SELECT/WITH query when querying a CTE")
+
                 pattern = rf"select \* from {re.escape(cte_name)}$"
-                replacement = f"select * from {cte_name} {additional_sql}"
-                final_sql = re.sub(pattern, replacement, cte_sql, flags=re.IGNORECASE | re.MULTILINE)
+                query_sql = re.sub(r"\{\{\s*cte\s*\}\}", cte_name, additional_sql_stripped, flags=re.IGNORECASE)
+                query_sql = query_sql.replace("__cte__", cte_name)
+                final_sql = re.sub(pattern, query_sql, cte_sql, flags=re.IGNORECASE | re.MULTILINE)
             else:
                 # Use the CTE SQL as-is (already has select * from cte_name)
                 final_sql = cte_sql
@@ -324,12 +333,17 @@ async def query_database(
     - Use {{ source('source_name', 'table_name') }} to reference source tables
     - dbt compiles these to actual table names before execution
 
-    **CTE Querying** (via parameters, NOT in SQL):
-    - Use cte_name="cte_name" and model_name="model_name" parameters (NOT inside the SQL string)
-    - The tool extracts the CTE and all its upstream dependencies from the model file
-    - Handles all {{ ref() }} and {{ source() }} resolution automatically
-    - The 'sql' parameter becomes optional additional filtering (WHERE, ORDER BY, LIMIT)
-    - IMPORTANT: Do NOT use {{ ref('model', cte='cte_name') }} - that syntax does not exist
+    **CTE Querying (LLM quick reference)**
+    - Always pass `cte_name` + `model_name` in parameters (not in SQL)
+    - Always write a normal `SELECT ... FROM __cte__ ...`
+        - `__cte__` or `{{ cte }}` is replaced with the CTE name
+    - What happens under the hood
+        - Extracts the target CTE plus upstream CTEs from the model
+        - Runs your query against that extracted CTE
+    - Templating
+        - dbt resolves all `{{ ref() }}` / `{{ source() }}` automatically; no manual table names
+    - Invalid syntax to avoid
+        - `{{ ref('model', cte='name') }}` does **not** exist; always use `cte_name` + `model_name`
 
     **Output Management**:
     - For large result sets (>100 rows), use output_file to save results
@@ -343,10 +357,10 @@ async def query_database(
     - CSV/TSV formats use proper quoting (only when necessary) and are Excel-compatible
 
     Args:
-        sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
-             For exploratory queries, include LIMIT. For aggregations/counts, omit it.
-             When using cte_name/model_name parameters, this becomes OPTIONAL additional SQL
-             to append after the CTE (e.g., "WHERE x > 10 LIMIT 5" or just "LIMIT 10")
+           sql: SQL query with Jinja templating: {{ ref('model') }}, {{ source('src', 'table') }}
+               For exploratory queries, include LIMIT. For aggregations/counts, omit it.
+               When using cte_name/model_name, provide a full `SELECT`/`WITH` query that
+               selects from `__cte__` (or `{{ cte }}`), which is replaced with the CTE name.
         output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
                     If provided, only metadata is returned (no preview for CSV/TSV).
                     If omitted, all data is returned inline (may consume large context).
@@ -379,21 +393,28 @@ async def query_database(
         query_database(
             cte_name="customer_agg",
             model_name="customers",
-            sql="LIMIT 10"  # Optional additional SQL
+            sql="SELECT * FROM __cte__ LIMIT 10"
         )
 
         # Query a CTE with filtering
         query_database(
             cte_name="customer_agg",
             model_name="customers",
-            sql="WHERE order_count > 5 LIMIT 20"
+            sql="SELECT * FROM __cte__ WHERE order_count > 5 LIMIT 20"
+        )
+
+        # Query a CTE with aggregation (full SELECT)
+        query_database(
+            cte_name="customer_agg",
+            model_name="customers",
+            sql="SELECT customer_id, COUNT(*) AS cnt FROM __cte__ GROUP BY customer_id"
         )
 
         # WRONG - Do NOT use ref() with cte parameter (does not exist):
         # query_database(sql="SELECT * FROM {{ ref('model', cte='cte_name') }}")
         #
         # CORRECT - Use cte_name and model_name parameters instead:
-        # query_database(cte_name="cte_name", model_name="model", sql="LIMIT 10")
+        # query_database(cte_name="cte_name", model_name="model", sql="SELECT * FROM __cte__ LIMIT 10")
 
         # Save large results to file
         query_database(

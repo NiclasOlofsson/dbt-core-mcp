@@ -285,7 +285,7 @@ The `query_database` tool supports extracting and querying individual CTEs from 
 query_database(
     cte_name="customer_agg",
     model_name="customers", 
-    sql="WHERE order_count > 5 LIMIT 10"
+    sql="SELECT * FROM __cte__ WHERE order_count > 5 LIMIT 10"
 )
 ```
 
@@ -303,7 +303,7 @@ The `extract_cte_sql` function ([query_database.py](src/dbt_core_mcp/tools/query
 - Uses the same CTE generator logic as unit test fixture generation
 - Parses the model's raw SQL file to extract the target CTE definition
 - Recursively traces CTE dependencies within the model
-- Generates: `WITH cte_dep1 AS (...), cte_dep2 AS (...), target_cte AS (...) SELECT * FROM target_cte [user_sql]`
+- Generates: `WITH cte_dep1 AS (...), cte_dep2 AS (...), target_cte AS (...) SELECT ... FROM target_cte`
 - Writes to a temporary file (system temp directory to avoid dbt detecting it as a model)
 - Returns the complete SQL string for execution via `dbt show`
 

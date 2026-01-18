@@ -223,7 +223,7 @@ select * from final
     # Call query_database with CTE extraction
     result = await query_database_impl(
         None,
-        "WHERE order_count > 2",  # Additional SQL to append
+        "SELECT * FROM __cte__ WHERE order_count > 2",
         None,
         "json",
         "customer_orders",  # cte_name
@@ -338,7 +338,7 @@ select * from customer_agg
 
 
 def test_extract_cte_sql_with_additional_sql(tmp_path: Path) -> None:
-    """Test CTE extraction with additional SQL filtering."""
+    """Test CTE extraction with full SELECT replacement."""
     # Create project structure
     project_dir = tmp_path / "project"
     models_dir = project_dir / "models"
@@ -358,12 +358,74 @@ with customer_orders as (
 select * from customer_orders
 """)
 
-    # Extract with additional SQL
-    sql = extract_cte_sql(project_dir, "customer_orders", "customers", "WHERE order_count > 5 LIMIT 10")
+    # Extract with full SELECT
+    sql = extract_cte_sql(
+        project_dir,
+        "customer_orders",
+        "customers",
+        "SELECT * FROM __cte__ WHERE order_count > 5 LIMIT 10",
+    )
 
-    # Verify the SQL has the additional filtering appended to the final SELECT
+    # Verify the SQL has the filtering applied to the final SELECT
     assert "with customer_orders as (" in sql.lower()
-    assert "select * from customer_orders WHERE order_count > 5 LIMIT 10" in sql
+    assert "select * from customer_orders where order_count > 5 limit 10" in sql.lower()
+
+
+def test_extract_cte_sql_rejects_partial_sql(tmp_path: Path) -> None:
+    """Test that partial SQL clauses are rejected for CTE extraction."""
+    project_dir = tmp_path / "project"
+    models_dir = project_dir / "models"
+    models_dir.mkdir(parents=True)
+
+    model_file = models_dir / "customers.sql"
+    model_file.write_text("""
+with customer_orders as (
+    select
+        customer_id,
+        count(*) as order_count
+    from {{ ref('orders') }}
+    group by customer_id
+)
+
+select * from customer_orders
+""")
+
+    with pytest.raises(ValueError, match="full SELECT/WITH query"):
+        extract_cte_sql(project_dir, "customer_orders", "customers", "WHERE order_count > 5")
+
+
+def test_extract_cte_sql_with_full_select(tmp_path: Path) -> None:
+    """Test CTE extraction with full SELECT replacement for aggregation."""
+    # Create project structure
+    project_dir = tmp_path / "project"
+    models_dir = project_dir / "models"
+    models_dir.mkdir(parents=True)
+
+    # Create a model
+    model_file = models_dir / "customers.sql"
+    model_file.write_text("""
+with customer_orders as (
+    select
+        customer_id,
+        count(*) as order_count
+    from {{ ref('orders') }}
+    group by customer_id
+)
+
+select * from customer_orders
+""")
+
+    # Extract with a full SELECT using the placeholder
+    sql = extract_cte_sql(
+        project_dir,
+        "customer_orders",
+        "customers",
+        "SELECT customer_id, COUNT(*) AS order_count FROM __cte__ GROUP BY customer_id",
+    )
+
+    assert "with customer_orders as (" in sql.lower()
+    assert "select customer_id, count(*) as order_count from customer_orders group by customer_id" in sql.lower()
+    assert "__cte__" not in sql
 
 
 def test_extract_cte_sql_model_not_found(tmp_path: Path) -> None:

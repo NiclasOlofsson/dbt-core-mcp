@@ -503,7 +503,7 @@ The `query_database` tool can extract and query individual CTEs directly, handli
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="WHERE order_count > 5 LIMIT 10"
+    sql="SELECT * FROM __cte__ WHERE order_count > 5 LIMIT 10"
 )
 ```
 
@@ -552,7 +552,7 @@ with base_customers as (...),
      customer_agg as (select * from enriched_customers)
 
 -- Just query the CTE you care about:
-query_database(cte_name="customer_agg", model_name="customers")
+query_database(cte_name="customer_agg", model_name="customers", sql="SELECT * FROM __cte__")
 
 -- Tool automatically includes base_customers and enriched_customers
 ```
@@ -582,27 +582,27 @@ Apply filters, ordering, or limits without editing the model:
 
 ```python
 # Just the CTE
-query_database(cte_name="customer_agg", model_name="customers")
+query_database(cte_name="customer_agg", model_name="customers", sql="SELECT * FROM __cte__")
 
 # With filtering
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="WHERE order_count > 10"
+    sql="SELECT * FROM __cte__ WHERE order_count > 10"
 )
 
 # With sorting and limiting
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="ORDER BY order_count DESC LIMIT 5"
+    sql="SELECT * FROM __cte__ ORDER BY order_count DESC LIMIT 5"
 )
 
 # Complex filtering
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="WHERE order_count BETWEEN 5 AND 10 ORDER BY total_amount DESC"
+    sql="SELECT * FROM __cte__ WHERE order_count BETWEEN 5 AND 10 ORDER BY total_amount DESC"
 )
 ```
 
@@ -621,11 +621,11 @@ query_database(
 # Model produces wrong totals - which CTE is the problem?
 
 # Check first transformation:
-query_database(cte_name="base_orders", model_name="orders", sql="LIMIT 5")
+query_database(cte_name="base_orders", model_name="orders", sql="SELECT * FROM __cte__ LIMIT 5")
 # ✓ Looks good
 
 # Check aggregation step:
-query_database(cte_name="order_agg", model_name="orders", sql="LIMIT 5")
+query_database(cte_name="order_agg", model_name="orders", sql="SELECT * FROM __cte__ LIMIT 5")
 # ❌ Missing some orders - found the bug!
 ```
 
@@ -635,12 +635,12 @@ query_database(cte_name="order_agg", model_name="orders", sql="LIMIT 5")
 # New team member exploring a 10-CTE model
 
 # Start at the beginning:
-query_database(cte_name="filtered_events", model_name="user_analytics")
+query_database(cte_name="filtered_events", model_name="user_analytics", sql="SELECT * FROM __cte__")
 
 # Walk through the chain:
-query_database(cte_name="sessionized_events", model_name="user_analytics")
-query_database(cte_name="session_metrics", model_name="user_analytics")
-query_database(cte_name="user_summary", model_name="user_analytics")
+query_database(cte_name="sessionized_events", model_name="user_analytics", sql="SELECT * FROM __cte__")
+query_database(cte_name="session_metrics", model_name="user_analytics", sql="SELECT * FROM __cte__")
+query_database(cte_name="user_summary", model_name="user_analytics", sql="SELECT * FROM __cte__")
 
 # Each step shows the transformation clearly
 ```
@@ -654,7 +654,7 @@ query_database(cte_name="user_summary", model_name="user_analytics")
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="WHERE order_count IN (0, 1, 5, 10) LIMIT 20"
+    sql="SELECT * FROM __cte__ WHERE order_count IN (0, 1, 5, 10) LIMIT 20"
 )
 
 # Results show:
@@ -678,7 +678,7 @@ query_database(
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="ORDER BY customer_id LIMIT 100",
+    sql="SELECT * FROM __cte__ ORDER BY customer_id LIMIT 100",
     output_file="temp_auto/customer_agg_before.csv",
     output_format="csv"
 )
@@ -689,7 +689,7 @@ query_database(
 query_database(
     cte_name="customer_agg",
     model_name="customers",
-    sql="ORDER BY customer_id LIMIT 100",
+    sql="SELECT * FROM __cte__ ORDER BY customer_id LIMIT 100",
     output_file="temp_auto/customer_agg_after.csv",
     output_format="csv"
 )
@@ -705,7 +705,7 @@ The `query_database` tool uses the same CTE extraction logic as the unit test ge
 2. **Extract Target CTE**: Find the CTE definition by name
 3. **Trace Dependencies**: Recursively find all upstream CTEs referenced
 4. **Generate Query**: Compose SQL with all dependencies and a final `SELECT * FROM {cte_name}`
-5. **Apply User SQL**: If `sql` parameter provided, wrap as: `SELECT * FROM ({generated_query}) WHERE ...`
+5. **Apply User SQL**: Replace the final SELECT with your full query (e.g., `SELECT ... FROM __cte__ ...`)
 6. **Execute via dbt**: Run through `dbt show --inline` (handles all template resolution)
 7. **Return Results**: Parse JSON output and format for display
 
@@ -724,7 +724,7 @@ The CTE query tool complements the CTE unit test generator:
 **Step 1: Explore with queries**
 ```python
 # Understand what customer_agg produces:
-query_database(cte_name="customer_agg", model_name="customers", sql="LIMIT 10")
+query_database(cte_name="customer_agg", model_name="customers", sql="SELECT * FROM __cte__ LIMIT 10")
 ```
 
 **Step 2: Write unit test based on real data**
@@ -793,15 +793,15 @@ test_models()
 
 ```python
 # CTE doesn't exist
-query_database(cte_name="nonexistent", model_name="customers")
+query_database(cte_name="nonexistent", model_name="customers", sql="SELECT * FROM __cte__")
 # Error: "CTE 'nonexistent' not found in model 'customers'"
 
 # Model doesn't exist
-query_database(cte_name="customer_agg", model_name="nonexistent")
+query_database(cte_name="customer_agg", model_name="nonexistent", sql="SELECT * FROM __cte__")
 # Error: "Model file 'nonexistent.sql' not found in models directory"
 
 # Invalid SQL composition
-query_database(cte_name="customer_agg", model_name="customers", sql="INVALID SQL")
+query_database(cte_name="customer_agg", model_name="customers", sql="SELECT * FROM __cte__ WHERE")
 # Error: "Query execution failed: [detailed dbt parser error]"
 ```
 
