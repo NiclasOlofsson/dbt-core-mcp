@@ -206,8 +206,10 @@ def generate_cte_model(base_model_path: Path, cte_name: str, test_given: list[di
     # Read original model
     sql = base_model_path.read_text()
 
-    # Find "cte_name AS (" (skip commented matches)
-    pattern = rf"\b{cte_name}\s+AS\s*\("
+    # Find "cte_name [AS] (" (skip commented matches)
+    # AS is optional in Spark SQL/Databricks, so allow it but do not require it
+    # Require whitespace before the opening paren to avoid matching function calls like name(...)
+    pattern = rf"\b{re.escape(cte_name)}(?:\s+AS)?\s+\("
     matches = list(re.finditer(pattern, sql, re.IGNORECASE))
 
     if not matches:

@@ -103,7 +103,8 @@ def extract_cte_sql(
             )
 
             if not success:
-                raise ValueError(f"Failed to extract CTE '{cte_name}' from model '{model_name}'")
+                example = 'Example: query_database(cte_name="%s", model_name="%s", sql="SELECT * FROM __cte__ WHERE <filters>" )' % (cte_name, model_name)
+                raise ValueError("Failed to extract CTE '%s' from model '%s'. Ensure the CTE name matches the model definition and include __cte__ in your SQL. %s" % (cte_name, model_name, example))
 
             # Read the generated CTE SQL
             cte_sql = tmp_path.read_text()
