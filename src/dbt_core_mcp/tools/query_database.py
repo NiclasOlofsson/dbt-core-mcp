@@ -234,6 +234,9 @@ async def _implementation(
             row_count = len(rows)
 
             # Handle different output formats
+            # Get elapsed time from result if available
+            elapsed_time = result.elapsed_time if hasattr(result, "elapsed_time") and result.elapsed_time is not None else None
+
             if output_format in ("csv", "tsv"):
                 # Convert to CSV/TSV format
                 delimiter = "\t" if output_format == "tsv" else ","
@@ -259,23 +262,32 @@ async def _implementation(
                     file_size_bytes = output_path.stat().st_size
                     file_size_kb = file_size_bytes / 1024
 
-                    return {
+                    response: dict[str, Any] = {
                         "status": "success",
                         "row_count": row_count,
                         "format": output_format,
                         "saved_to": str(output_path),
                         "file_size_kb": round(file_size_kb, 2),
                     }
+                    if elapsed_time is not None:
+                        response["elapsed_time"] = round(elapsed_time, 2)
+                    return response
                 else:
                     # Return CSV/TSV inline
-                    return {
+                    response: dict[str, Any] = {
                         "status": "success",
                         "row_count": row_count,
                         "format": output_format,
                         output_format: csv_string,
                     }
+                    if elapsed_time is not None:
+                        response["elapsed_time"] = round(elapsed_time, 2)
+                    return response
             else:
                 # JSON format (default)
+                # Get elapsed time from result if available
+                elapsed_time = result.elapsed_time if hasattr(result, "elapsed_time") and result.elapsed_time is not None else None
+
                 if output_file:
                     # Ensure directory exists
                     output_path = Path(output_file)
@@ -290,7 +302,7 @@ async def _implementation(
                     file_size_kb = file_size_bytes / 1024
 
                     # Return metadata with preview
-                    return {
+                    response: dict[str, Any] = {
                         "status": "success",
                         "row_count": row_count,
                         "saved_to": str(output_path),
@@ -298,13 +310,19 @@ async def _implementation(
                         "columns": list(rows[0].keys()) if rows else [],
                         "preview": rows[:3],  # First 3 rows as preview
                     }
+                    if elapsed_time is not None:
+                        response["elapsed_time"] = round(elapsed_time, 2)
+                    return response
                 else:
                     # Return all rows inline
-                    return {
+                    response: dict[str, Any] = {
                         "status": "success",
                         "row_count": row_count,
                         "rows": rows,
                     }
+                    if elapsed_time is not None:
+                        response["elapsed_time"] = round(elapsed_time, 2)
+                    return response
         else:
             return {
                 "status": "failed",
@@ -377,10 +395,12 @@ async def query_database(
         state: Shared state object injected by FastMCP
 
     Returns:
-        JSON inline: {"status": "success", "row_count": N, "rows": [...]}
-        JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...]}
-        CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "..."}
-        CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path"}
+        JSON inline: {"status": "success", "row_count": N, "rows": [...], "elapsed_time": X.XX}
+        JSON file: {"status": "success", "row_count": N, "saved_to": "path", "preview": [...], "elapsed_time": X.XX}
+        CSV/TSV inline: {"status": "success", "row_count": N, "format": "csv", "csv": "...", "elapsed_time": X.XX}
+        CSV/TSV file: {"status": "success", "row_count": N, "format": "csv", "saved_to": "path", "elapsed_time": X.XX}
+
+        Note: elapsed_time is in seconds and represents the total query execution time including compilation
 
     Raises:
         RuntimeError: If query execution fails

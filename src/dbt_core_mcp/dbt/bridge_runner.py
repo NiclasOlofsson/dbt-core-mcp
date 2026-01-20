@@ -1138,7 +1138,11 @@ class BridgeRunner:
         invoke_start = time.time()
         result = await self.invoke(args, progress_callback=progress_callback)
         invoke_end = time.time()
-        logger.info(f"invoke() took {invoke_end - invoke_start:.2f}s total")
+        elapsed = invoke_end - invoke_start
+        logger.info(f"invoke() took {elapsed:.2f}s total")
+
+        # Store elapsed time in result for tool to report
+        result.elapsed_time = elapsed
 
         # Report query completion
         if progress_callback and result.success:

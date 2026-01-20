@@ -41,6 +41,12 @@ def mock_state() -> Mock:
     # Mock runner with invoke_query method
     mock_runner = Mock()
     mock_runner.invoke_query = AsyncMock()
+
+    # Configure default return value with elapsed_time
+    default_result = Mock()
+    default_result.elapsed_time = 1.23  # Default elapsed time for tests
+    mock_runner.invoke_query.return_value = default_result
+
     state.get_runner = AsyncMock(return_value=mock_runner)
 
     return state
@@ -52,6 +58,7 @@ async def test_query_database_simple_select(mock_state: Mock) -> None:
     # Mock the query execution to return test data in dbt show format
     mock_result = Mock()
     mock_result.success = True
+    mock_result.elapsed_time = 1.23
     mock_result.stdout = json.dumps({"show": [{"test_col": 1}]})
 
     mock_runner = await mock_state.get_runner()
@@ -63,6 +70,8 @@ async def test_query_database_simple_select(mock_state: Mock) -> None:
     assert "rows" in result
     assert "row_count" in result
     assert result["row_count"] >= 1
+    assert "elapsed_time" in result
+    assert result["elapsed_time"] == 1.23
 
 
 @pytest.mark.asyncio
@@ -71,6 +80,7 @@ async def test_query_database_with_ref(mock_state: Mock) -> None:
     # Mock the query execution to return test data in dbt show format
     mock_result = Mock()
     mock_result.success = True
+    mock_result.elapsed_time = 1.23
     mock_result.stdout = json.dumps(
         {
             "show": [
@@ -96,6 +106,7 @@ async def test_query_database_with_source(mock_state: Mock) -> None:
     # Mock the query execution to return test data in dbt show format
     mock_result = Mock()
     mock_result.success = True
+    mock_result.elapsed_time = 1.23
     mock_result.stdout = json.dumps(
         {
             "show": [
@@ -122,6 +133,7 @@ async def test_query_database_with_limit_in_sql(mock_state: Mock) -> None:
     # Mock the query execution to return test data in dbt show format
     mock_result = Mock()
     mock_result.success = True
+    mock_result.elapsed_time = 1.23
     mock_result.stdout = json.dumps(
         {
             "show": [
@@ -208,6 +220,7 @@ select * from final
     # Mock the query execution to return test data
     mock_result = Mock()
     mock_result.success = True
+    mock_result.elapsed_time = 1.23
     mock_result.stdout = json.dumps(
         {
             "show": [
