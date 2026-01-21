@@ -97,7 +97,6 @@ class DbtCoreMcpServer:
             
             Single simple queries with known schema: Execute directly using the tools.
             """,
-            include_fastmcp_meta=True,  # Include FastMCP metadata for clients
         )  # type: ignore[arg-type]
 
         # Store the explicit project_dir if provided, otherwise will detect from workspace roots
