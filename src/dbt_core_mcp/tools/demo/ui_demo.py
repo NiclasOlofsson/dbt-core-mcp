@@ -1,6 +1,5 @@
 """Simple tool for MCP UI resource testing."""
 
-import asyncio
 import logging
 from typing import Any
 
@@ -22,20 +21,6 @@ logger = logging.getLogger(__name__)
 async def demo_ui(_ctx: Context) -> dict[str, Any]:
     """Render the demo UI resource (resource://demo/hello)."""
     logger.info("demo_ui tool called")
-    await asyncio.sleep(10)
-    # return {
-    #     "content": [
-    #         {
-    #             "type": "text",
-    #             "text": "Demo UI attached: resource://demo/hello",
-    #             "_meta": {
-    #                 "ui": {
-    #                     "resourceUri": "resource://demo/hello",
-    #                 }
-    #             },
-    #         }
-    #     ],
-    # }
     return {
         "message": "Demo UI tool invoked",
     }
