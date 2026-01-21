@@ -1,5 +1,5 @@
 ---
-applyTo: '**'
+applyTo: '**/*.{yml,sql}'
 description: Guidelines for dbt unit testing workflow
 ---
 

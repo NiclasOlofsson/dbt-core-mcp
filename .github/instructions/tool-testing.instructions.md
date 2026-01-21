@@ -1,5 +1,5 @@
 ---
-applyTo: '**'
+applyTo: '**/*.py'
 description: Protocol for testing dbt-core-mcp tool changes
 ---
 

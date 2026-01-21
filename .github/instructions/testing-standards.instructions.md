@@ -1,5 +1,5 @@
 ---
-applyTo: '**'
+applyTo: '**/*.{py,html}'
 description: Testing standards and patterns for dbt-core-mcp tools
 ---
 
