@@ -257,33 +257,242 @@ async def test_manifest_not_initialized_error(mock_state: Mock) -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_downstream_not_implemented_error(mock_state: Mock) -> None:
-    """Test that downstream direction raises NotImplementedError."""
-    # Execute & Assert
-    with pytest.raises(NotImplementedError, match="Downstream column lineage is not yet implemented"):
-        await implementation(
-            ctx=None,
-            model_name="customers",
-            column_name="customer_id",
-            direction="downstream",
-            depth=None,
-            state=mock_state,
-            force_parse=False,
-        )
+# ========== Downstream Lineage Tests (TDD - write tests first) ==========
 
 
 @pytest.mark.asyncio
-async def test_both_direction_not_implemented_error(mock_state: Mock) -> None:
-    """Test that 'both' direction raises NotImplementedError."""
-    # Execute & Assert
-    with pytest.raises(NotImplementedError, match="Downstream column lineage is not yet implemented"):
-        await implementation(
-            ctx=None,
-            model_name="customers",
-            column_name="customer_id",
-            direction="both",
-            depth=None,
-            state=mock_state,
-            force_parse=False,
-        )
+async def test_downstream_single_level(mock_state: Mock) -> None:
+    """Test downstream lineage for a single level (depth=1)."""
+    # Setup: stg_customers has downstream model 'customers' that uses customer_id
+    mock_state.manifest = Mock()
+
+    # Mock get_lineage to return downstream models AND upstream for schema building
+    def mock_get_lineage(model: str, **kwargs: Any) -> dict[str, Any]:
+        direction = kwargs.get("direction", "downstream")
+        if model == "stg_customers" and direction == "downstream":
+            return {"downstream": [{"unique_id": "model.test.customers", "name": "customers"}]}
+        elif "customers" in model and direction == "upstream":
+            # Customers depends on stg_customers
+            return {"upstream": [{"unique_id": "model.test.stg_customers", "name": "stg_customers"}]}
+        return {"downstream": [], "upstream": []}
+
+    mock_state.manifest.get_lineage = mock_get_lineage
+
+    # Mock get_resource_info for both models
+    def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
+        if "stg_customers" in unique_id or unique_id == "stg_customers":
+            return {
+                "name": "stg_customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                "compiled_sql": "SELECT id as customer_id FROM raw_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}],
+            }
+        elif "customers" in unique_id:
+            return {
+                "name": "customers",
+                "unique_id": "model.test.customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                # COMPILED SQL ({{ ref() }} already resolved to table name)
+                "compiled_sql": "SELECT customer_id, COUNT(*) as order_count FROM stg_customers GROUP BY customer_id",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "order_count", "type": "INTEGER"}],
+            }
+        return {}
+
+    mock_state.manifest.get_resource_info = mock_get_resource_info
+
+    # Execute
+    result = await implementation(
+        ctx=None,
+        model_name="stg_customers",
+        column_name="customer_id",
+        direction="downstream",
+        depth=1,
+        state=mock_state,
+        force_parse=False,
+    )
+
+    # Assert
+    assert result["model"] == "stg_customers"
+    assert result["column"] == "customer_id"
+    assert result["direction"] == "downstream"
+    assert "downstream_usage" in result
+
+    downstream = result["downstream_usage"]
+    assert len(downstream) == 1
+    assert downstream[0]["model"] == "customers"
+    assert downstream[0]["column"] == "customer_id"
+    assert downstream[0]["distance"] == 1
+
+
+@pytest.mark.asyncio
+async def test_downstream_column_not_used(mock_state: Mock) -> None:
+    """Test downstream when column is not used in downstream models."""
+    # Setup: stg_customers.first_name is not used in customers model
+    mock_state.manifest = Mock()
+
+    mock_state.manifest.get_lineage = Mock(return_value={"downstream": [{"unique_id": "model.test.customers", "name": "customers"}]})
+
+    def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
+        if "stg_customers" in unique_id or unique_id == "stg_customers":
+            return {"name": "stg_customers", "compiled_sql": "SELECT id as customer_id, name as first_name FROM raw_customers", "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "first_name", "type": "VARCHAR"}]}
+        elif "customers" in unique_id:
+            # Only uses customer_id, not first_name
+            return {
+                "name": "customers",
+                "compiled_sql": "SELECT customer_id, COUNT(*) as order_count FROM {{ ref('stg_customers') }} GROUP BY customer_id",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "order_count", "type": "INTEGER"}],
+            }
+        return {}
+
+    mock_state.manifest.get_resource_info = mock_get_resource_info
+
+    # Execute
+    result = await implementation(
+        ctx=None,
+        model_name="stg_customers",
+        column_name="first_name",
+        direction="downstream",
+        depth=1,
+        state=mock_state,
+        force_parse=False,
+    )
+
+    # Assert: No downstream usage
+    assert result["downstream_usage"] == []
+
+
+@pytest.mark.asyncio
+async def test_downstream_recursive_depth_2(mock_state: Mock) -> None:
+    """Test downstream lineage traces through multiple levels (depth=2)."""
+    # Setup: stg_customers -> customers -> report
+    mock_state.manifest = Mock()
+
+    call_count = {"get_lineage": 0}
+
+    def mock_get_lineage(model: str, **kwargs: Any) -> dict[str, Any]:
+        call_count["get_lineage"] += 1
+        if model == "stg_customers":
+            return {"downstream": [{"unique_id": "model.test.customers", "name": "customers"}]}
+        elif model == "customers":
+            return {"downstream": [{"unique_id": "model.test.report", "name": "report"}]}
+        return {"downstream": []}
+
+    mock_state.manifest.get_lineage = mock_get_lineage
+
+    def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
+        if "stg_customers" in unique_id or unique_id == "stg_customers":
+            return {
+                "name": "stg_customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                "compiled_sql": "SELECT id as customer_id FROM raw_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}],
+            }
+        elif "customers" in unique_id:
+            return {
+                "name": "customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                # COMPILED SQL (templates resolved)
+                "compiled_sql": "SELECT customer_id FROM stg_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}],
+            }
+        elif "report" in unique_id:
+            return {
+                "name": "report",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                # COMPILED SQL (templates resolved)
+                "compiled_sql": "SELECT customer_id as cust_id FROM customers",
+                "database_columns": [{"col_name": "cust_id", "type": "INTEGER"}],
+            }
+        return {}
+
+    mock_state.manifest.get_resource_info = mock_get_resource_info
+
+    # Execute
+    result = await implementation(
+        ctx=None,
+        model_name="stg_customers",
+        column_name="customer_id",
+        direction="downstream",
+        depth=2,
+        state=mock_state,
+        force_parse=False,
+    )
+
+    # Assert: Should find usage in both customers and report
+    downstream = result["downstream_usage"]
+    assert len(downstream) == 2
+
+    # Check distance levels
+    customers_usage = next(d for d in downstream if d["model"] == "customers")
+    assert customers_usage["distance"] == 1
+    assert customers_usage["column"] == "customer_id"
+
+    report_usage = next(d for d in downstream if d["model"] == "report")
+    assert report_usage["distance"] == 2
+    assert report_usage["column"] == "cust_id"  # Renamed
+
+
+@pytest.mark.asyncio
+async def test_downstream_respects_depth_limit(mock_state: Mock) -> None:
+    """Test that depth parameter limits downstream traversal."""
+    # Setup: Same as above but with depth=1
+    mock_state.manifest = Mock()
+
+    def mock_get_lineage(model: str, **kwargs: Any) -> dict[str, Any]:
+        if model == "stg_customers":
+            return {"downstream": [{"unique_id": "model.test.customers", "name": "customers"}]}
+        elif model == "customers":
+            return {"downstream": [{"unique_id": "model.test.report", "name": "report"}]}
+        return {"downstream": []}
+
+    mock_state.manifest.get_lineage = mock_get_lineage
+
+    def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
+        if "stg_customers" in unique_id or unique_id == "stg_customers":
+            return {
+                "name": "stg_customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                "compiled_sql": "SELECT id as customer_id FROM raw_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}],
+            }
+        elif "customers" in unique_id:
+            return {
+                "name": "customers",
+                "database": "main",
+                "schema": "main",
+                "alias": None,
+                # COMPILED SQL (templates resolved)
+                "compiled_sql": "SELECT customer_id FROM stg_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}],
+            }
+        return {}
+
+    mock_state.manifest.get_resource_info = mock_get_resource_info
+
+    # Execute with depth=1
+    result = await implementation(
+        ctx=None,
+        model_name="stg_customers",
+        column_name="customer_id",
+        direction="downstream",
+        depth=1,
+        state=mock_state,
+        force_parse=False,
+    )
+
+    # Assert: Should only find customers, not report
+    downstream = result["downstream_usage"]
+    assert len(downstream) == 1
+    assert downstream[0]["model"] == "customers"
