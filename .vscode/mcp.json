@@ -5,6 +5,7 @@
       "args": [
         "run",
         "dbt-core-mcp",
+        "--reload",
         "--project-dir",
         "examples/jaffle_shop"
         // Uncomment to set a timeout for DBT commands (in seconds, use 0 for no timeout)
@@ -13,8 +14,6 @@
       ],
       "cwd": ".",
       "env": {
-        // AI: Increment this value (1, 2, 3, etc.) to force VS Code to restart the MCP server for testing
-        "_RESTART": "124",
         // Enable experimental features (CTE test generation)
         "EXPERIMENTAL_FEATURES": "true"
       }

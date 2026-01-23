@@ -37,6 +37,11 @@ async def _implementation(
         info["profiles_dir"] = state.profiles_dir
         info["status"] = "ready"
 
+        # Add dbt-core-mcp version
+        from .. import __version__
+
+        info["dbt_core_mcp_version"] = __version__
+
         # Optionally run full dbt debug for connectivity diagnostics
         if run_debug:
             runner = await state.get_runner()

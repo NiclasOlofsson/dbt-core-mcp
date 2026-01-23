@@ -357,9 +357,13 @@ class DbtCoreMcpServer:
 
             await self._initialize_dbt_components(needs_parse=not self.state.manifest_exists(), force_parse=force_parse)
 
-    def run(self) -> None:
-        """Run the MCP server."""
-        self.app.run(show_banner=False)
+    def run(self, stateless: bool = False) -> None:
+        """Run the MCP server.
+
+        Args:
+            stateless: Enable stateless mode for seamless restarts (auto-enabled with --reload).
+        """
+        self.app.run(show_banner=False, stateless=stateless)
 
 
 def create_server(project_dir: str | None = None, timeout: float | None = None) -> DbtCoreMcpServer:
