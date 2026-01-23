@@ -124,7 +124,7 @@ Or if you prefer `pipx`:
 
 The server will automatically use your workspace directory as the dbt project location.
 
-### Option 3: Bleeding Edge (Always Latest from GitHub)
+### Option 3: Bleeding Edge (Latest from GitHub)
 
 For the impatient who want the latest features immediately:
 
@@ -162,7 +162,18 @@ For the impatient who want the latest features immediately:
 }
 ```
 
-This downloads and installs directly from GitHub every time - always bleeding edge!
+**Getting Updates:**
+When using git installation, `uvx` and `pipx` cache the downloaded code. To get the latest changes:
+
+```bash
+# For uvx users
+uv cache clean dbt-core-mcp
+
+# For pipx users (--no-cache prevents caching)
+# Already configured in the pipx setup above
+```
+
+After cleaning the cache, restart VS Code or your MCP client to pick up the latest version.
 
 ### Optional Configuration
 
