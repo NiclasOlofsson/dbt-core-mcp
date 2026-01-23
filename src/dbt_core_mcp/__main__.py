@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -17,10 +18,17 @@ from typing import Any
 
 from .server import create_server
 
+# Platform-specific imports for process management
+if sys.platform == "win32":
+    import ctypes
+
+# Unix-specific imports
+if sys.platform != "win32":
+    import ctypes.util
+
 
 def setup_logging(debug: bool = False) -> None:
     """Set up logging configuration."""
-    import os
     import tempfile
 
     level = logging.DEBUG if debug else logging.INFO
@@ -108,7 +116,111 @@ def parse_arguments() -> argparse.Namespace:
 
 def _source_file_filter(change: object, path: str) -> bool:
     """Filter for source files (Python and HTML)."""
+    # Test reload - iteration 6 (checking loop entry)
     return path.endswith(".py") or path.endswith(".html")
+
+
+def _setup_windows_job_object() -> Any:
+    """Create a Windows job object that kills all processes when closed.
+
+    Returns:
+        Job handle (or None on error)
+    """
+    if sys.platform != "win32":
+        return None
+
+    try:
+        # Windows API constants
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+        # Create job object
+        job = ctypes.windll.kernel32.CreateJobObjectW(None, None)
+        if not job:
+            logging.warning("Failed to create Windows job object")
+            return None
+
+        # Use a simple byte buffer approach for the job info structure
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on 64-bit Windows
+        job_info = ctypes.create_string_buffer(144)
+
+        # LimitFlags is at offset 16 in JOBOBJECT_BASIC_LIMIT_INFORMATION
+        # which is the first member of JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        limit_flags_offset = 16
+        ctypes.c_ulong.from_buffer(job_info, limit_flags_offset).value = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        result = ctypes.windll.kernel32.SetInformationJobObject(
+            job,
+            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(job_info),
+            len(job_info),
+        )
+
+        if not result:
+            error_code = ctypes.windll.kernel32.GetLastError()
+            logging.warning(f"Failed to set job object information (error code: {error_code})")
+            ctypes.windll.kernel32.CloseHandle(job)
+            return None
+
+        logging.debug("Created Windows job object for automatic child process cleanup")
+        return job
+    except Exception as e:
+        logging.warning(f"Error setting up Windows job object: {e}")
+        return None
+
+
+def _add_process_to_job(job: Any, process_handle: int) -> bool:
+    """Add a process to a Windows job object.
+
+    Args:
+        job: Job object handle
+        process_handle: Process handle
+
+    Returns:
+        True if successful
+    """
+    if not job or sys.platform != "win32":
+        return False
+
+    try:
+        result = ctypes.windll.kernel32.AssignProcessToJobObject(job, process_handle)
+        if result:
+            logging.debug("Added process to job object")
+            return True
+        else:
+            logging.warning("Failed to add process to job object")
+            return False
+    except Exception as e:
+        logging.warning(f"Error adding process to job: {e}")
+        return False
+
+
+def _set_pdeathsig_preexec() -> None:
+    """Preexec function for Unix to set parent death signal.
+
+    This function is called in the child process before exec.
+    It sets the process to receive SIGKILL when the parent dies.
+    """
+    if sys.platform == "win32":
+        return
+
+    try:
+        # Load libc
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return
+
+        libc = ctypes.CDLL(libc_name)
+
+        # PR_SET_PDEATHSIG = 1, SIGKILL = 9
+        PR_SET_PDEATHSIG = 1
+        SIGKILL = 9
+
+        # Set parent death signal
+        libc.prctl(PR_SET_PDEATHSIG, SIGKILL)
+    except Exception:
+        # Silently fail - this is a best-effort cleanup mechanism
+        pass
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
@@ -143,6 +255,9 @@ async def run_with_reload(
     process: asyncio.subprocess.Process | None = None
     first_run = True
 
+    # Create Windows job object for automatic child process cleanup
+    job = _setup_windows_job_object() if sys.platform == "win32" else None
+
     logging.info("Reload mode enabled - watching for file changes...")
     for watch_path in watch_paths:
         logging.info(f"  Watching: {watch_path}")
@@ -162,13 +277,34 @@ async def run_with_reload(
 
     try:
         while not shutdown_event.is_set():
-            # Start the subprocess
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=None,
-                stdout=None,
-                stderr=None,
-            )
+            # Start the subprocess with platform-specific cleanup mechanisms
+            if sys.platform == "win32":
+                # On Windows, start process and add to job object
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=None,
+                    stdout=None,
+                    stderr=None,
+                )
+                # Add to job object for automatic cleanup
+                if job and process.pid:
+                    # Get process handle (Windows-specific)
+                    PROCESS_ALL_ACCESS = 0x1F0FFF
+                    process_handle = ctypes.windll.kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, process.pid)
+                    if process_handle:
+                        _add_process_to_job(job, process_handle)
+                        ctypes.windll.kernel32.CloseHandle(process_handle)
+                    else:
+                        logging.warning(f"Failed to open process handle for PID {process.pid}")
+            else:
+                # On Unix, use prctl to set parent death signal
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=None,
+                    stdout=None,
+                    stderr=None,
+                    preexec_fn=_set_pdeathsig_preexec,
+                )
 
             if first_run:
                 logging.info("Server started - watching for changes...")
@@ -238,6 +374,13 @@ async def run_with_reload(
             loop.remove_signal_handler(signal.SIGINT)
         if process and process.returncode is None:
             await _terminate_process(process)
+        # Clean up Windows job object
+        if job and sys.platform == "win32":
+            try:
+                ctypes.windll.kernel32.CloseHandle(job)
+                logging.debug("Closed Windows job object")
+            except Exception:
+                pass
 
 
 def main() -> None:

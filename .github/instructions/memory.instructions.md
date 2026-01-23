@@ -39,12 +39,7 @@ This file contains workspace-specific information for AI conversations.
    - For complete validation: `uv run ruff check src tests && uv run ruff format --check src tests && uv run pyright src tests && uv run pytest`
    - NO EXCEPTIONS
 
-3. **MCP Server Restart Protocol**:
-   - Increment `_RESTART` counter in `.vscode/mcp.json` to restart the MCP server
-   - Always restore mcp.json before committing (testing only)
-   - NO EXCEPTIONS
-
-4. **Git Commit Amendment Protocol**:
+3. **Git Commit Amendment Protocol**:
    - When fixing issues in the MOST RECENT commit (before anyone else pulls):
      - Use `git commit --amend --no-edit` to fix without creating new commit
      - Use `git push --force` to rewrite remote history
@@ -55,7 +50,7 @@ This file contains workspace-specific information for AI conversations.
    - APPLIES TO: All git operations in dbt-core-mcp workspace
    - NO EXCEPTIONS
 
-5. **Release Protocol (MANDATORY)**:
+4. **Release Protocol (MANDATORY)**:
    - ALWAYS follow the complete release process documented in CONTRIBUTING.md
    - NEVER manually edit version in pyproject.toml or create tags with `git tag`
    - ALWAYS use bump-my-version tool for ALL releases
