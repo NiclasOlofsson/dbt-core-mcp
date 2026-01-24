@@ -22,6 +22,8 @@ def mock_state() -> Mock:
     state = Mock(spec=DbtCoreServerContext)
     state.ensure_initialized = AsyncMock()
     state.manifest = Mock()
+    state.manifest.get_manifest_dict = Mock(return_value={"nodes": {}, "sources": {}})
+    state.manifest.get_node_by_unique_id = Mock(return_value=None)
     return state
 
 

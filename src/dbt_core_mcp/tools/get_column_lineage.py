@@ -112,6 +112,73 @@ def _find_table_columns(schema_mapping: dict[str, Any], table_name: str) -> list
     return []
 
 
+def _normalize_relation_name(value: str) -> str:
+    """Normalize relation names for matching."""
+    return (
+        value.replace("\"", "")
+        .replace("`", "")
+        .replace("[", "")
+        .replace("]", "")
+        .strip()
+        .lower()
+    )
+
+
+def _add_relation_keys(lookup: dict[str, str], database: str | None, schema: str | None, identifier: str | None, unique_id: str) -> None:
+    if not identifier:
+        return
+
+    if database and schema:
+        lookup[_normalize_relation_name(f"{database}.{schema}.{identifier}")] = unique_id
+
+    if schema:
+        lookup[_normalize_relation_name(f"{schema}.{identifier}")] = unique_id
+
+    lookup[_normalize_relation_name(identifier)] = unique_id
+
+
+def _build_relation_lookup(manifest: ManifestLoader) -> dict[str, str]:
+    """Build relation name -> unique_id lookup from the manifest."""
+    lookup: dict[str, str] = {}
+    manifest_dict = manifest.get_manifest_dict()
+
+    for node in manifest_dict.get("nodes", {}).values():
+        if not isinstance(node, dict):
+            continue
+
+        unique_id = node.get("unique_id")
+        if not unique_id:
+            continue
+
+        relation_name = node.get("relation_name")
+        if relation_name:
+            lookup[_normalize_relation_name(relation_name)] = unique_id
+
+        database = node.get("database")
+        schema = node.get("schema")
+        identifier = node.get("alias") or node.get("name")
+        _add_relation_keys(lookup, database, schema, identifier, unique_id)
+
+    for source in manifest_dict.get("sources", {}).values():
+        if not isinstance(source, dict):
+            continue
+
+        unique_id = source.get("unique_id")
+        if not unique_id:
+            continue
+
+        relation_name = source.get("relation_name")
+        if relation_name:
+            lookup[_normalize_relation_name(relation_name)] = unique_id
+
+        database = source.get("database")
+        schema = source.get("schema")
+        identifier = source.get("identifier") or source.get("name")
+        _add_relation_keys(lookup, database, schema, identifier, unique_id)
+
+    return lookup
+
+
 def _get_output_columns_from_sql(compiled_sql: str, schema_mapping: dict[str, Any]) -> list[str]:
     """Extract output column names from compiled SQL.
 
@@ -243,6 +310,31 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
 
     walk_dependencies(lineage_node)
     return dependencies
+
+
+def _resolve_dependency_resource(
+    dependency: dict[str, str],
+    relation_lookup: dict[str, str],
+) -> str | None:
+    table_name = dependency.get("table")
+    if not table_name:
+        return None
+
+    database = dependency.get("database")
+    schema = dependency.get("schema")
+
+    if database and schema:
+        key = _normalize_relation_name(f"{database}.{schema}.{table_name}")
+        if key in relation_lookup:
+            return relation_lookup[key]
+
+    if schema:
+        key = _normalize_relation_name(f"{schema}.{table_name}")
+        if key in relation_lookup:
+            return relation_lookup[key]
+
+    key = _normalize_relation_name(table_name)
+    return relation_lookup.get(key)
 
 
 def _check_column_in_lineage(lineage_node: Any, source_model: str, source_column: str) -> bool:
@@ -497,6 +589,121 @@ def _trace_upstream_column(
         raise ValueError(f"Column lineage analysis failed: {e}")
 
 
+def _trace_upstream_recursive(
+    manifest: ManifestLoader,
+    model_name: str,
+    column_name: str,
+    depth: int | None,
+    current_depth: int = 0,
+    relation_lookup: dict[str, str] | None = None,
+    visited: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if column_name.strip() == "*":
+        return []
+
+    if depth is not None and current_depth >= depth:
+        return []
+
+    if relation_lookup is None:
+        relation_lookup = _build_relation_lookup(manifest)
+
+    if visited is None:
+        visited = set()
+
+    resource_info = manifest.get_resource_info(model_name, resource_type="model", include_compiled_sql=True, include_database_schema=False)
+    compiled_sql = resource_info.get("compiled_sql")
+    if not compiled_sql:
+        return []
+
+    dependencies = _trace_upstream_column(manifest, model_name, column_name, compiled_sql, depth)
+
+    for dependency in dependencies:
+        if dependency.get("dbt_resource"):
+            continue
+
+        resolved = _resolve_dependency_resource(dependency, relation_lookup)
+        if resolved:
+            dependency["dbt_resource"] = resolved
+
+    results = list(dependencies)
+
+    for dependency in dependencies:
+        dbt_resource = dependency.get("dbt_resource")
+        if not dbt_resource or dbt_resource in visited:
+            continue
+
+        node = manifest.get_node_by_unique_id(dbt_resource)
+        if not node:
+            continue
+
+        if node.get("resource_type") != "model":
+            continue
+
+        next_model = node.get("name")
+        if not next_model:
+            continue
+
+        visited.add(dbt_resource)
+        dep_column = dependency.get("column", "")
+        if dep_column.endswith(".*") or dep_column.strip() == "*":
+            upstream_info = manifest.get_resource_info(
+                next_model,
+                resource_type="model",
+                include_compiled_sql=True,
+                include_database_schema=True,
+            )
+            upstream_sql = upstream_info.get("compiled_sql")
+            if not upstream_sql:
+                continue
+
+            try:
+                upstream_lineage = manifest.get_lineage(
+                    next_model,
+                    resource_type="model",
+                    direction="upstream",
+                    depth=1,
+                )
+                upstream_schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
+            except (ValueError, KeyError, AttributeError):
+                upstream_schema_mapping = {}
+
+            output_columns_dict, _ = _resolve_output_columns(
+                upstream_sql,
+                upstream_schema_mapping,
+                upstream_info,
+            )
+
+            for output_column in output_columns_dict.keys():
+                results.extend(
+                    _trace_upstream_recursive(
+                        manifest,
+                        next_model,
+                        output_column,
+                        depth,
+                        current_depth + 1,
+                        relation_lookup,
+                        visited,
+                    )
+                )
+            continue
+
+        next_column = dep_column.split(".")[-1] if dep_column else column_name
+
+        results.extend(
+            _trace_upstream_recursive(
+                manifest,
+                next_model,
+                next_column,
+                depth,
+                current_depth + 1,
+                relation_lookup,
+                visited,
+            )
+        )
+
+    return results
+
+
 def _format_lineage_response(model_name: str, column_name: str, direction: str, dependencies: list[dict[str, str]], downstream_usage: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Format the final lineage response.
 
@@ -587,12 +794,12 @@ async def implementation(
 
     if direction == "upstream":
         # Upstream only
-        dependencies = _trace_upstream_column(state.manifest, model_name, column_name, compiled_sql, depth)
+        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth)
         return _format_lineage_response(model_name, column_name, direction, dependencies, None)
 
     else:  # direction == "both"
         # Both upstream and downstream
-        dependencies = _trace_upstream_column(state.manifest, model_name, column_name, compiled_sql, depth)
+        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth)
         downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth)
         return _format_lineage_response(model_name, column_name, direction, dependencies, downstream_usage)
 
