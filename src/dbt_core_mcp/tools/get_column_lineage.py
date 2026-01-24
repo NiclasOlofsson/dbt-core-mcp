@@ -276,7 +276,7 @@ def _resolve_output_columns(
     return {}, "none"
 
 
-def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, depth: int | None) -> list[dict[str, str]]:
+def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, depth: int | None) -> list[dict[str, Any]]:
     """Extract column dependencies from sqlglot lineage node.
 
     Args:
@@ -285,9 +285,10 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
         depth: Maximum depth to traverse
 
     Returns:
-        List of dependency dicts with column, table, and optional dbt_resource
+        List of dependency dicts with column, table, optional dbt_resource,
+        and internal CTE transformation path (via_ctes, transformations)
     """
-    dependencies: list[dict[str, str]] = []
+    dependencies: list[dict[str, Any]] = []
 
     def walk_dependencies(node: Any, depth_current: int = 0) -> None:
         """Recursively walk lineage tree."""
@@ -295,7 +296,7 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
             return
 
         for dep in node.walk():
-            # Check if this is a table reference
+            # Check if this is a table reference (external dependency)
             if hasattr(dep, "source") and hasattr(dep.source, "this"):
                 table_name = str(dep.source.this)
                 col_name = dep.name
@@ -304,7 +305,7 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
                 db = getattr(dep.source, "catalog", None)
                 schema_name = getattr(dep.source, "db", None)
 
-                dependency_info: dict[str, str] = {
+                dependency_info: dict[str, Any] = {
                     "column": col_name,
                     "table": table_name,
                 }
@@ -313,6 +314,13 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
                     dependency_info["database"] = str(db)
                 if schema_name:
                     dependency_info["schema"] = str(schema_name)
+
+                # Extract CTE transformation path
+                cte_path = _extract_cte_path(dep)
+                if cte_path["via_ctes"]:
+                    dependency_info["via_ctes"] = cte_path["via_ctes"]
+                if cte_path["transformations"]:
+                    dependency_info["transformations"] = cte_path["transformations"]
 
                 # Try to find the corresponding dbt resource
                 if manifest:
@@ -329,8 +337,83 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
     return dependencies
 
 
+def _extract_cte_path(lineage_node: Any) -> dict[str, Any]:
+    """Extract the CTE transformation path from a lineage node.
+
+    Walks up the lineage tree to find all intermediate CTEs and transformations
+    that connect the output column to the source table column.
+
+    Args:
+        lineage_node: A single dependency node from sqlglot lineage walk
+
+    Returns:
+        Dictionary with:
+        - via_ctes: List of CTE names in transformation order
+        - transformations: List of transformation details per CTE
+    """
+    via_ctes: list[str] = []
+    transformations: list[dict[str, str]] = []
+    visited: set[int] = set()  # Track visited nodes by id to prevent cycles
+
+    # Walk up the dependency chain to find CTEs
+    current = lineage_node
+    max_iterations = 100  # Hard limit to prevent infinite loops
+    iteration = 0
+    
+    while current is not None and iteration < max_iterations:
+        iteration += 1
+        
+        # Prevent cycles by tracking visited nodes
+        node_id = id(current)
+        if node_id in visited:
+            break
+        visited.add(node_id)
+        
+        # Check if this node represents a CTE
+        if hasattr(current, "source"):
+            source = current.source
+            
+            # CTE sources don't have catalog/db, just 'this' pointing to CTE name
+            # Table sources have catalog/db attributes
+            is_cte = (
+                hasattr(source, "this")
+                and not hasattr(source, "catalog")
+                and not getattr(source, "db", None)
+            )
+            
+            if is_cte:
+                cte_name = str(source.this).strip('"')
+                
+                # Avoid duplicates and skip if it looks like a table name with schema
+                if cte_name and "." not in cte_name and cte_name not in via_ctes:
+                    via_ctes.insert(0, cte_name)  # Insert at start for correct order
+                    
+                    # Capture transformation info
+                    transform_info: dict[str, str] = {
+                        "cte": cte_name,
+                        "column": current.name if hasattr(current, "name") else "",
+                    }
+                    
+                    # Try to get expression if available
+                    if hasattr(current, "expression") and current.expression is not None:
+                        expr_sql = str(current.expression)
+                        # Only include if it's not just a simple column reference
+                        if expr_sql and expr_sql != transform_info["column"]:
+                            transform_info["expression"] = expr_sql
+                    
+                    transformations.insert(0, transform_info)  # Insert at start
+        
+        # Move up the lineage chain
+        current = getattr(current, "downstream", None) if hasattr(current, "downstream") else None
+
+    return {
+        "via_ctes": via_ctes,
+        "transformations": transformations,
+    }
+
+
 def _resolve_dependency_resource(
-    dependency: dict[str, str],
+    dependency: dict[str, Any],
     relation_lookup: dict[str, str],
 ) -> str | None:
     table_name = dependency.get("table")
@@ -787,7 +870,7 @@ def _trace_upstream_recursive(
     return results
 
 
-def _format_lineage_response(model_name: str, column_name: str, direction: str, dependencies: list[dict[str, str]], downstream_usage: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _format_lineage_response(model_name: str, column_name: str, direction: str, dependencies: list[dict[str, Any]], downstream_usage: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Format the final lineage response.
 
     Args:
