@@ -399,6 +399,69 @@ Analyze the blast radius of changing any resource - shows all downstream depende
 - Estimating rebuild time after changes
 - Risk assessment for modifications
 
+#### `get_column_lineage`
+Trace column-level lineage through SQL transformations - see exactly how columns flow through CTEs, joins, aggregations, and transformations.
+
+>&nbsp;  
+>You: *"Show me where the revenue column comes from"*  
+>Copilot: *Traces upstream through CTEs showing each transformation step*
+>
+>You: *"How does customer_id flow through the customers model?"*  
+>Copilot: *Shows CTE chain: final → customer_agg → orders → stg_orders*
+>
+>You: *"What columns use customer_id downstream?"*  
+>Copilot: *Displays all downstream models and columns that reference it*
+>
+>You: *"Trace order_total from source to final output"*  
+>Copilot: *Shows complete transformation path with CTEs and expressions*
+>
+>You: *"What transformations happen to price in this model?"*  
+>Copilot: *Lists each CTE that transforms the column with SQL expressions*  
+>&nbsp;
+
+**Parameters:**
+- `model_name`: Name of the dbt model to analyze
+- `column_name`: Name of the column to trace
+- `direction`: `"upstream"` (sources), `"downstream"` (usage), or `"both"` (default)
+- `depth`: Maximum levels to traverse (None for unlimited, 1 for immediate, etc.)
+
+**Returns:** Column-level dependencies with detailed transformation tracking:
+- **via_ctes**: List of CTE names in transformation order (shows the path through internal CTEs)
+- **transformations**: Detailed transformation at each step (CTE name, column, SQL expression)
+- **dependencies**: Source columns and tables with full qualification
+- **dbt resource mapping**: Links to source models and sources
+
+**CTE Transformation Tracking:**
+
+The tool tracks how columns flow through Common Table Expressions (CTEs) inside models:
+
+```
+customer_agg.order_count
+  └─ via_ctes: ["final", "customer_agg"]
+  └─ transformations:
+       - CTE: final
+         Column: order_count
+         Expression: COALESCE(customer_agg.order_count, 0)
+       - CTE: customer_agg
+         Column: order_count
+         Expression: COUNT(orders.order_id)
+```
+
+This shows you:
+- Which CTEs the column passes through (`via_ctes`)
+- Exactly how it's transformed at each step (`transformations`)
+- The SQL expression used at every transformation point
+
+**Use cases:**
+- Understand complex SQL transformations step-by-step
+- Debug why a column has unexpected values (trace the transformation chain)
+- Find all sources for a calculated column
+- See downstream usage before renaming columns
+- Document data lineage for compliance/auditing
+- Identify optimization opportunities in CTE chains
+
+**Note:** Requires the model to be compiled (`dbt compile`). Uses sqlglot to parse SQL and trace column flows.
+
 ### Database Queries
 
 #### `query_database`

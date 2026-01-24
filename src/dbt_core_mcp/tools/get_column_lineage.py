@@ -1020,7 +1020,19 @@ async def get_column_lineage(
         - Source columns this column depends on (upstream)
         - Downstream columns that depend on this column
         - Transformations and derivations
+        - CTE transformation paths (via_ctes, transformations)
         - dbt resource mapping where available
+
+        Each dependency includes:
+        - column: Column name
+        - table: Source table name
+        - schema: Source schema (if available)
+        - database: Source database (if available)
+        - via_ctes: List of CTE names in transformation order
+        - transformations: Transformation details per CTE step
+          - cte: CTE name
+          - column: Column name at this step
+          - expression: SQL expression (truncated to 200 chars)
 
     Raises:
         ValueError: If model not found, column not found, or SQL parse fails
