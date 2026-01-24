@@ -2,6 +2,12 @@
 
 This module implements the get_column_lineage tool for dbt Core MCP.
 Uses sqlglot to parse SQL and trace column dependencies through CTEs and transformations.
+
+Architecture:
+- Unified SQL parsing approach for both upstream and downstream directions
+- Two-stage process: (1) resolve output columns, (2) analyze lineage per column
+- Direction-agnostic helpers: _prepare_model_analysis, _analyze_column_lineage
+- Consistent fallback order: SQL-derived → warehouse → manifest → none
 """
 
 import logging
@@ -25,10 +31,28 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "implementation",
     "get_column_lineage",
+    "_prepare_model_analysis",
+    "_analyze_column_lineage",
     "_build_schema_mapping",
+    "_resolve_output_columns",
     "_extract_dependencies_from_lineage",
     "_format_lineage_response",
 ]
+
+
+# ========== Unified Helpers (Direction-Agnostic) ==========
+# These helpers are used by both upstream and downstream lineage analysis,
+# ensuring consistent behavior regardless of direction:
+#
+# 1. _prepare_model_analysis(): Gets resource_info + compiled_sql + schema_mapping
+# 2. _analyze_column_lineage(): Runs sqlglot lineage with consistent error handling
+# 3. _resolve_output_columns(): Resolves output columns with fallback order
+#
+# This unified approach ensures:
+# - Same SQL parsing logic for both directions
+# - Consistent error handling and logging
+# - No code duplication
+# - Easier to maintain and test
 
 
 def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, Any]) -> dict[str, Any]:
@@ -114,14 +138,7 @@ def _find_table_columns(schema_mapping: dict[str, Any], table_name: str) -> list
 
 def _normalize_relation_name(value: str) -> str:
     """Normalize relation names for matching."""
-    return (
-        value.replace("\"", "")
-        .replace("`", "")
-        .replace("[", "")
-        .replace("]", "")
-        .strip()
-        .lower()
-    )
+    return value.replace('"', "").replace("`", "").replace("[", "").replace("]", "").strip().lower()
 
 
 def _add_relation_keys(lookup: dict[str, str], database: str | None, schema: str | None, identifier: str | None, unique_id: str) -> None:
@@ -432,28 +449,16 @@ async def _trace_downstream_column(
                 continue
 
         try:
-            # Get downstream model info (schema + SQL)
-            # Use the model name, not unique_id
+            # Get downstream model info (schema + SQL) using unified helper
             model_name_downstream = downstream_model["name"]
-            downstream_info = manifest.get_resource_info(model_name_downstream, resource_type="model", include_database_schema=True, include_compiled_sql=True)
-
-            # All models compiled upfront, so we should have SQL now
-            compiled_sql = downstream_info.get("compiled_sql")
+            downstream_info, compiled_sql, schema_mapping = _prepare_model_analysis(
+                manifest,
+                model_name_downstream,
+            )
 
             logger.info(f"[DOWNSTREAM] {model_name_downstream}: has_sql={compiled_sql is not None}")
 
-            # Skip if no compiled SQL (already compiled at start, so this shouldn't happen)
-            if not compiled_sql:
-                logger.warning(f"No compiled SQL for {model_name_downstream}, skipping")
-                continue
-
-            # Build schema context for sqlglot
-            # Get upstream models for this downstream model to build schema mapping
-            upstream_lineage = manifest.get_lineage(model_name_downstream, resource_type="model", direction="upstream", depth=1)
-            schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
-
-            logger.debug(f"[DOWNSTREAM] Schema for {model_name_downstream}: {schema_mapping}")
-
+            # Resolve output columns using centralized logic
             output_columns_dict, output_source = _resolve_output_columns(compiled_sql, schema_mapping, downstream_info)
             if output_columns_dict:
                 logger.info(f"[DOWNSTREAM] {model_name_downstream}: using {len(output_columns_dict)} columns from {output_source}")
@@ -490,8 +495,13 @@ async def _trace_downstream_column(
 
             for output_col_name in output_columns_dict.keys():
                 try:
-                    # Trace this output column's lineage
-                    column_lineage_result = lineage(column=output_col_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
+                    # Trace this output column's lineage using unified helper
+                    column_lineage_result = _analyze_column_lineage(
+                        output_col_name,
+                        compiled_sql,
+                        schema_mapping,
+                        model_name_downstream,
+                    )
 
                     logger.debug(f"[DOWNSTREAM] Check if {output_col_name} uses {model_name}.{column_name}")
 
@@ -536,52 +546,84 @@ async def _trace_downstream_column(
     return results
 
 
-def _trace_upstream_column(
+def _prepare_model_analysis(
     manifest: ManifestLoader,
     model_name: str,
-    column_name: str,
-    compiled_sql: str,
-    depth: int | None,
-) -> list[dict[str, Any]]:
-    """Trace where a column's data comes from (upstream dependencies).
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """Prepare model for column lineage analysis (unified helper).
+
+    Gets all necessary data in one call:
+    - Resource info (metadata, columns)
+    - Compiled SQL
+    - Schema mapping for sqlglot context
 
     Args:
         manifest: ManifestLoader instance
-        model_name: Model name being analyzed
-        column_name: Column name to trace
-        compiled_sql: Compiled SQL of the model
-        depth: Maximum depth to traverse (None for unlimited)
+        model_name: Model name to analyze
 
     Returns:
-        List of upstream dependencies
+        Tuple of (resource_info, compiled_sql, schema_mapping)
 
     Raises:
-        ValueError: If SQL parsing fails
+        ValueError: If model not found or has no compiled SQL
     """
-    # Get upstream models to build schema context
+    # Get resource info with compiled SQL and database schema
+    resource_info = manifest.get_resource_info(
+        model_name,
+        resource_type="model",
+        include_compiled_sql=True,
+        include_database_schema=True,
+    )
+
+    compiled_sql = resource_info.get("compiled_sql")
+    if not compiled_sql:
+        raise ValueError(f"No compiled SQL found for model '{model_name}'")
+
+    # Build schema mapping from upstream models
     try:
         upstream_lineage = manifest.get_lineage(
             model_name,
             resource_type="model",
             direction="upstream",
-            depth=1,  # Just immediate parents
+            depth=1,
         )
-
-        # Build schema mapping for sqlglot
         schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
     except (ValueError, KeyError, AttributeError) as e:
-        # Schema mapping is optional - sqlglot can work without it (just less context)
-        logger.warning(f"Could not build schema mapping: {e}")
-        schema_mapping = {}  # Continue with empty schema
+        logger.warning(f"Could not build schema mapping for {model_name}: {e}")
+        schema_mapping = {}
 
-    # Use sqlglot to trace column lineage
+    return resource_info, compiled_sql, schema_mapping
+
+
+def _analyze_column_lineage(
+    column_name: str,
+    compiled_sql: str,
+    schema_mapping: dict[str, Any],
+    model_name: str,
+) -> Any:
+    """Run sqlglot column lineage analysis (unified helper).
+
+    Consistent error handling for both upstream and downstream directions.
+
+    Args:
+        column_name: Column to analyze
+        compiled_sql: Compiled SQL
+        schema_mapping: Schema context for sqlglot
+        model_name: Model name (for error messages)
+
+    Returns:
+        sqlglot lineage node
+
+    Raises:
+        ValueError: If SQL parsing fails
+    """
     try:
-        # Get lineage for the specific column
-        column_lineage_result = lineage(column=column_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
-
-        # Extract dependencies
-        return _extract_dependencies_from_lineage(column_lineage_result, manifest, depth)
-
+        return lineage(
+            column=column_name,
+            sql=compiled_sql,
+            schema=schema_mapping,
+            dialect="databricks",
+        )
     except SqlglotError as e:
         raise ValueError(f"Failed to parse SQL for column lineage: {e}\nModel: {model_name}, Column: {column_name}")
     except Exception as e:
@@ -598,25 +640,71 @@ def _trace_upstream_recursive(
     relation_lookup: dict[str, str] | None = None,
     visited: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Recursively trace upstream dependencies for a column.
+
+    Uses unified SQL parsing approach (same as downstream):
+    1. Prepare model (get resource_info + compiled_sql + schema_mapping)
+    2. Resolve output columns (SQL → warehouse → manifest)
+    3. Run lineage per resolved column
+    4. Recurse on dependencies
+
+    Args:
+        manifest: ManifestLoader instance
+        model_name: Model name to analyze
+        column_name: Column name to trace
+        depth: Maximum depth (None for unlimited)
+        current_depth: Current recursion depth
+        relation_lookup: FQN → unique_id mapping (built once, reused)
+        visited: Set of visited unique_ids (prevent cycles)
+
+    Returns:
+        List of upstream dependencies with dbt resource mapping
+    """
+    # Skip wildcards
     if column_name.strip() == "*":
         return []
 
+    # Check depth limit
     if depth is not None and current_depth >= depth:
         return []
 
+    # Initialize tracking on first call
     if relation_lookup is None:
         relation_lookup = _build_relation_lookup(manifest)
 
     if visited is None:
         visited = set()
 
-    resource_info = manifest.get_resource_info(model_name, resource_type="model", include_compiled_sql=True, include_database_schema=False)
-    compiled_sql = resource_info.get("compiled_sql")
-    if not compiled_sql:
+    # Prepare model for analysis (unified helper - Phase 1)
+    try:
+        _, compiled_sql, schema_mapping = _prepare_model_analysis(
+            manifest,
+            model_name,
+        )
+    except ValueError as e:
+        logger.warning(f"Could not prepare model {model_name}: {e}")
         return []
 
-    dependencies = _trace_upstream_column(manifest, model_name, column_name, compiled_sql, depth)
+    # Run lineage analysis (unified helper - Phase 1)
+    try:
+        column_lineage_result = _analyze_column_lineage(
+            column_name,
+            compiled_sql,
+            schema_mapping,
+            model_name,
+        )
+    except ValueError as e:
+        logger.warning(f"Could not analyze column {model_name}.{column_name}: {e}")
+        return []
 
+    # Extract dependencies and resolve to dbt resources
+    dependencies = _extract_dependencies_from_lineage(
+        column_lineage_result,
+        manifest,
+        depth,
+    )
+
+    # Resolve dependency FQNs to dbt resources
     for dependency in dependencies:
         if dependency.get("dbt_resource"):
             continue
@@ -627,16 +715,14 @@ def _trace_upstream_recursive(
 
     results = list(dependencies)
 
+    # Recurse on each dependency
     for dependency in dependencies:
         dbt_resource = dependency.get("dbt_resource")
         if not dbt_resource or dbt_resource in visited:
             continue
 
         node = manifest.get_node_by_unique_id(dbt_resource)
-        if not node:
-            continue
-
-        if node.get("resource_type") != "model":
+        if not node or node.get("resource_type") != "model":
             continue
 
         next_model = node.get("name")
@@ -644,35 +730,29 @@ def _trace_upstream_recursive(
             continue
 
         visited.add(dbt_resource)
+
+        # Extract column name from dependency
         dep_column = dependency.get("column", "")
+
+        # Handle wildcards: resolve upstream model's output columns
         if dep_column.endswith(".*") or dep_column.strip() == "*":
-            upstream_info = manifest.get_resource_info(
-                next_model,
-                resource_type="model",
-                include_compiled_sql=True,
-                include_database_schema=True,
-            )
-            upstream_sql = upstream_info.get("compiled_sql")
-            if not upstream_sql:
+            # Use unified helper to prepare upstream model
+            try:
+                upstream_info, upstream_sql, upstream_schema_mapping = _prepare_model_analysis(
+                    manifest,
+                    next_model,
+                )
+            except ValueError:
                 continue
 
-            try:
-                upstream_lineage = manifest.get_lineage(
-                    next_model,
-                    resource_type="model",
-                    direction="upstream",
-                    depth=1,
-                )
-                upstream_schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
-            except (ValueError, KeyError, AttributeError):
-                upstream_schema_mapping = {}
-
+            # Resolve output columns using unified logic
             output_columns_dict, _ = _resolve_output_columns(
                 upstream_sql,
                 upstream_schema_mapping,
                 upstream_info,
             )
 
+            # Recurse per resolved output column
             for output_column in output_columns_dict.keys():
                 results.extend(
                     _trace_upstream_recursive(
@@ -687,6 +767,7 @@ def _trace_upstream_recursive(
                 )
             continue
 
+        # Regular column: extract name and recurse
         next_column = dep_column.split(".")[-1] if dep_column else column_name
 
         results.extend(
@@ -700,6 +781,8 @@ def _trace_upstream_recursive(
                 visited,
             )
         )
+
+    return results
 
     return results
 
