@@ -340,70 +340,83 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
 def _extract_cte_path(lineage_node: Any) -> dict[str, Any]:
     """Extract the CTE transformation path from a lineage node.
 
-    Walks up the lineage tree to find all intermediate CTEs and transformations
-    that connect the output column to the source table column.
+    Sqlglot lineage nodes have names like:
+    - "final.tier" (CTE reference)
+    - "aggregated.order_count" (CTE reference)
+    - "customer_id" (direct column, no CTE)
+    - "base.customer_id" (CTE reference)
+
+    The part before the dot is the CTE name. We walk up the lineage to collect
+    all CTEs in the transformation chain.
 
     Args:
         lineage_node: A single dependency node from sqlglot lineage walk
 
     Returns:
         Dictionary with:
-        - via_ctes: List of CTE names in transformation order
-        - transformations: List of transformation details per CTE
+        - via_ctes: List of CTE names in transformation order (root to leaf)
+        - transformations: List of transformation details per step
     """
     via_ctes: list[str] = []
     transformations: list[dict[str, str]] = []
     visited: set[int] = set()  # Track visited nodes by id to prevent cycles
 
-    # Walk up the dependency chain to find CTEs
+    # Walk up the lineage chain (using downstream references)
     current = lineage_node
     max_iterations = 100  # Hard limit to prevent infinite loops
     iteration = 0
-    
+
     while current is not None and iteration < max_iterations:
         iteration += 1
-        
+
         # Prevent cycles by tracking visited nodes
         node_id = id(current)
         if node_id in visited:
             break
         visited.add(node_id)
-        
-        # Check if this node represents a CTE
-        if hasattr(current, "source"):
-            source = current.source
-            
-            # CTE sources don't have catalog/db, just 'this' pointing to CTE name
-            # Table sources have catalog/db attributes
-            is_cte = (
-                hasattr(source, "this")
-                and not hasattr(source, "catalog")
-                and not getattr(source, "db", None)
-            )
-            
-            if is_cte:
-                cte_name = str(source.this).strip('"')
-                
-                # Avoid duplicates and skip if it looks like a table name with schema
-                if cte_name and "." not in cte_name and cte_name not in via_ctes:
-                    via_ctes.insert(0, cte_name)  # Insert at start for correct order
-                    
-                    # Capture transformation info
-                    transform_info: dict[str, str] = {
-                        "cte": cte_name,
-                        "column": current.name if hasattr(current, "name") else "",
-                    }
-                    
-                    # Try to get expression if available
-                    if hasattr(current, "expression") and current.expression is not None:
-                        expr_sql = str(current.expression)
-                        # Only include if it's not just a simple column reference
-                        if expr_sql and expr_sql != transform_info["column"]:
-                            transform_info["expression"] = expr_sql
-                    
-                    transformations.insert(0, transform_info)  # Insert at start
-        
-        # Move up the lineage chain
+
+        # Extract CTE name from node name (format: "cte_name.column_name" or "column_name")
+        if hasattr(current, "name") and current.name:
+            node_name = current.name
+
+            # Check if this is a CTE reference (has a dot separator)
+            if "." in node_name:
+                parts = node_name.split(".", 1)
+                cte_name = parts[0]
+                column_name = parts[1] if len(parts) > 1 else node_name
+
+                # Only add if it's not already in the list (dedup) and looks like a CTE
+                # (CTEs typically don't have schema qualifiers like "database.schema.table")
+                if cte_name and cte_name not in via_ctes:
+                    # Skip if it looks like a database or schema qualifier
+                    # (these typically have catalog/db attributes on source)
+                    is_table_ref = False
+                    if hasattr(current, "source"):
+                        source = current.source
+                        is_table_ref = hasattr(source, "catalog") or getattr(source, "db", None) is not None
+
+                    if not is_table_ref:
+                        via_ctes.append(cte_name)
+
+                        # Capture transformation info
+                        transform_info: dict[str, str] = {
+                            "cte": cte_name,
+                            "column": column_name,
+                        }
+
+                        # Try to get expression if available
+                        if hasattr(current, "expression") and current.expression is not None:
+                            expr_sql = str(current.expression)
+                            # Only include if it's not just a simple column reference
+                            if expr_sql and expr_sql.strip() != column_name:
+                                # Limit expression length to avoid huge outputs
+                                if len(expr_sql) > 200:
+                                    expr_sql = expr_sql[:197] + "..."
+                                transform_info["expression"] = expr_sql
+
+                        transformations.append(transform_info)
+
+        # Move up the lineage chain (downstream attribute points to parent)
         current = getattr(current, "downstream", None) if hasattr(current, "downstream") else None
 
     return {

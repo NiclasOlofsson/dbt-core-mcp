@@ -241,6 +241,9 @@ def test_extract_dependencies_from_lineage() -> None:
     mock_dep.source.db = Mock()
     mock_dep.source.db.__str__ = Mock(return_value="my_schema")
     mock_dep.name = "id"
+    mock_dep.downstream = None  # No parent node (end of chain)
+    mock_dep.expression = Mock()
+    mock_dep.expression.__str__ = Mock(return_value="column_expression")
 
     mock_lineage_node = Mock()
     mock_lineage_node.walk = Mock(return_value=[mock_dep])
