@@ -56,7 +56,7 @@ async def test_test_command_construction_basic(mock_state: Mock) -> None:
     mock_runner = await mock_state.get_runner()
     mock_runner.invoke.side_effect = capture_invoke
 
-    result = await impl_test_models(None, None, None, False, False, False, mock_state)
+    result = await impl_test_models(None, None, None, False, False, False, False, mock_state)
 
     assert result["status"] == "success"
     assert "results" in result
@@ -81,7 +81,7 @@ async def test_test_command_construction_with_select(mock_state: Mock) -> None:
     mock_runner = await mock_state.get_runner()
     mock_runner.invoke.side_effect = capture_invoke
 
-    result = await impl_test_models(None, "customers", None, False, False, False, mock_state)
+    result = await impl_test_models(None, "customers", None, False, False, False, False, mock_state)
 
     assert result["status"] == "success"
     # Find test command
@@ -97,7 +97,7 @@ async def test_test_parameter_validation(mock_state: Mock) -> None:
     mock_state.prepare_state_based_selection = AsyncMock(side_effect=ValueError("Cannot use both select_state_modified and select"))
 
     with pytest.raises(ValueError, match="Cannot use both select_state_modified"):
-        await impl_test_models(None, "customers", None, True, False, False, mock_state)
+        await impl_test_models(None, "customers", None, True, False, False, False, mock_state)
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_test_fail_fast_flag(mock_state: Mock) -> None:
     mock_runner = await mock_state.get_runner()
     mock_runner.invoke.side_effect = capture_invoke
 
-    result = await impl_test_models(None, None, None, False, False, True, mock_state)
+    result = await impl_test_models(None, None, None, False, False, True, False, mock_state)
 
     assert result["status"] == "success"
     test_cmd = [cmd for cmd in commands_run if "test" in cmd][0]
@@ -143,7 +143,7 @@ async def test_test_exclude_parameter(mock_state: Mock) -> None:
     mock_runner = await mock_state.get_runner()
     mock_runner.invoke.side_effect = capture_invoke
 
-    result = await impl_test_models(None, None, "not_null*", False, False, False, mock_state)
+    result = await impl_test_models(None, None, "not_null*", False, False, False, False, mock_state)
 
     assert result["status"] == "success"
     test_cmd = [cmd for cmd in commands_run if "test" in cmd][0]
@@ -168,6 +168,6 @@ async def test_test_state_based_selection(mock_state: Mock) -> None:
     mock_runner = await mock_state.get_runner()
     mock_runner.invoke.side_effect = capture_invoke
 
-    await impl_test_models(None, None, None, True, False, False, mock_state)
+    await impl_test_models(None, None, None, True, False, False, False, mock_state)
 
     mock_state.prepare_state_based_selection.assert_called_once()

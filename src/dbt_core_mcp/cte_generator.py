@@ -565,3 +565,37 @@ def generate_cte_tests(project_dir: Path) -> int:
         logger.debug("No CTE tests found (tests with config: cte_test: true)")
 
     return cte_tests_found
+
+
+def cleanup_cte_tests(project_dir: Path) -> None:
+    """Clean up all __cte_tests directories.
+
+    Recursively searches model paths for __cte_tests directories and removes them.
+
+    Args:
+        project_dir: Path to dbt project root
+    """
+    logger.debug("Cleaning up CTE test files...")
+
+    # Load project configuration
+    config = _load_project_config(project_dir)
+    model_paths = config.get("model-paths", ["models"])
+
+    # Find and remove all __cte_tests directories
+    removed_count = 0
+    for model_path in model_paths:
+        search_dir = project_dir / model_path
+        if not search_dir.exists():
+            continue
+
+        # Find all __cte_tests directories recursively
+        for cte_tests_dir in search_dir.rglob("__cte_tests"):
+            if cte_tests_dir.is_dir():
+                shutil.rmtree(cte_tests_dir)
+                logger.debug(f"Removed {cte_tests_dir}")
+                removed_count += 1
+
+    if removed_count > 0:
+        logger.info(f"Cleaned up {removed_count} __cte_tests director{'y' if removed_count == 1 else 'ies'}")
+    else:
+        logger.debug("No __cte_tests directories to clean up")
