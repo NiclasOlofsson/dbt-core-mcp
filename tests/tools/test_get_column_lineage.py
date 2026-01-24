@@ -448,6 +448,9 @@ async def test_downstream_single_level(mock_state: Mock) -> None:
 
     mock_state.manifest.get_resource_info = mock_get_resource_info
 
+    # Mock get_project_info to return adapter type
+    mock_state.manifest.get_project_info = Mock(return_value={"adapter_type": "duckdb"})
+
     # Execute
     result = await implementation(
         ctx=None,
@@ -561,6 +564,9 @@ async def test_downstream_recursive_depth_2(mock_state: Mock) -> None:
 
     mock_state.manifest.get_resource_info = mock_get_resource_info
 
+    # Mock get_project_info to return adapter type
+    mock_state.manifest.get_project_info = Mock(return_value={"adapter_type": "duckdb"})
+
     # Execute
     result = await implementation(
         ctx=None,
@@ -624,6 +630,9 @@ async def test_downstream_respects_depth_limit(mock_state: Mock) -> None:
         return {}
 
     mock_state.manifest.get_resource_info = mock_get_resource_info
+
+    # Mock get_project_info to return adapter type
+    mock_state.manifest.get_project_info = Mock(return_value={"adapter_type": "duckdb"})
 
     # Execute with depth=1
     result = await implementation(

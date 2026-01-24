@@ -37,7 +37,61 @@ __all__ = [
     "_resolve_output_columns",
     "_extract_dependencies_from_lineage",
     "_format_lineage_response",
+    "_map_dbt_adapter_to_sqlglot_dialect",
 ]
+
+
+def _map_dbt_adapter_to_sqlglot_dialect(adapter_type: str) -> str:
+    """Map dbt adapter type to sqlglot dialect.
+
+    Args:
+        adapter_type: The dbt adapter type from manifest metadata
+
+    Returns:
+        sqlglot dialect name
+    """
+    # Direct matches between dbt adapter and sqlglot dialect
+    ADAPTER_TO_DIALECT = {
+        "athena": "athena",
+        "bigquery": "bigquery",
+        "clickhouse": "clickhouse",
+        "databricks": "databricks",
+        "doris": "doris",
+        "dremio": "dremio",
+        "duckdb": "duckdb",
+        "fabric": "fabric",
+        "hive": "hive",
+        "materialize": "materialize",
+        "mysql": "mysql",
+        "oracle": "oracle",
+        "postgres": "postgres",
+        "postgresql": "postgres",  # Some adapters use postgresql
+        "redshift": "redshift",
+        "risingwave": "risingwave",
+        "singlestore": "singlestore",
+        "snowflake": "snowflake",
+        "spark": "spark",
+        "sqlite": "sqlite",
+        "starrocks": "starrocks",
+        "teradata": "teradata",
+        "trino": "trino",
+        # Adapters that need dialect mapping
+        "synapse": "tsql",  # Azure Synapse uses T-SQL
+        "sqlserver": "tsql",  # SQL Server uses T-SQL
+        "glue": "spark",  # AWS Glue uses Spark
+        "fabricspark": "spark",  # Fabric Lakehouse uses Spark
+    }
+
+    adapter_lower = adapter_type.lower()
+    dialect = ADAPTER_TO_DIALECT.get(adapter_lower)
+
+    if dialect:
+        logger.debug(f"Mapped dbt adapter '{adapter_type}' to sqlglot dialect '{dialect}'")
+        return dialect
+
+    # Fallback: use adapter type as-is (might work for some cases)
+    logger.warning(f"No explicit mapping for dbt adapter '{adapter_type}', using as-is for sqlglot")
+    return adapter_lower
 
 
 # ========== Unified Helpers (Direction-Agnostic) ==========
@@ -196,7 +250,7 @@ def _build_relation_lookup(manifest: ManifestLoader) -> dict[str, str]:
     return lookup
 
 
-def _get_output_columns_from_sql(compiled_sql: str, schema_mapping: dict[str, Any]) -> list[str]:
+def _get_output_columns_from_sql(compiled_sql: str, schema_mapping: dict[str, Any], dialect: str = "databricks") -> list[str]:
     """Extract output column names from compiled SQL.
 
     Handles SELECT * from a single CTE or table by expanding from schema mapping
@@ -205,12 +259,13 @@ def _get_output_columns_from_sql(compiled_sql: str, schema_mapping: dict[str, An
     Args:
         compiled_sql: Compiled SQL string
         schema_mapping: Schema mapping for table expansion
+        dialect: SQL dialect for parsing (default: databricks)
 
     Returns:
         List of output column names
     """
     try:
-        ast = parse_one(compiled_sql, dialect="databricks")
+        ast = parse_one(compiled_sql, dialect=dialect)
     except Exception:
         return []
 
@@ -243,6 +298,7 @@ def _resolve_output_columns(
     compiled_sql: str,
     schema_mapping: dict[str, Any],
     resource_info: dict[str, Any],
+    dialect: str = "databricks",
 ) -> tuple[dict[str, Any], str]:
     """Resolve output columns for a model using ordered fallbacks.
 
@@ -251,12 +307,18 @@ def _resolve_output_columns(
     2) Warehouse columns (database_columns)
     3) Manifest columns (schema.yml)
 
+    Args:
+        compiled_sql: Compiled SQL string
+        schema_mapping: Schema mapping for table expansion
+        resource_info: Resource information dict
+        dialect: SQL dialect for parsing (default: databricks)
+
     Returns:
         (output_columns_dict, source_label)
     """
     output_columns_dict: dict[str, Any] = {}
 
-    output_columns = _get_output_columns_from_sql(compiled_sql, schema_mapping)
+    output_columns = _get_output_columns_from_sql(compiled_sql, schema_mapping, dialect)
     if output_columns:
         return {col: {} for col in output_columns}, "sql"
 
@@ -498,6 +560,7 @@ async def _trace_downstream_column(
     model_name: str,
     column_name: str,
     depth: int | None,
+    dialect: str = "databricks",
     current_depth: int = 0,
 ) -> list[dict[str, Any]]:
     """Recursively trace where a column is used downstream.
@@ -507,6 +570,7 @@ async def _trace_downstream_column(
         model_name: Model name to start from
         column_name: Column name to trace
         depth: Maximum depth to traverse (None for unlimited)
+        dialect: SQL dialect for parsing (default: databricks)
         current_depth: Current recursion depth
 
     Returns:
@@ -555,7 +619,7 @@ async def _trace_downstream_column(
             logger.info(f"[DOWNSTREAM] {model_name_downstream}: has_sql={compiled_sql is not None}")
 
             # Resolve output columns using centralized logic
-            output_columns_dict, output_source = _resolve_output_columns(compiled_sql, schema_mapping, downstream_info)
+            output_columns_dict, output_source = _resolve_output_columns(compiled_sql, schema_mapping, downstream_info, dialect)
             if output_columns_dict:
                 logger.info(f"[DOWNSTREAM] {model_name_downstream}: using {len(output_columns_dict)} columns from {output_source}")
             else:
@@ -574,7 +638,7 @@ async def _trace_downstream_column(
                 if found_reference:
                     logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream} references {model_name}.{column_name} (string search)")
                     results.append({"model": model_name_downstream, "column": column_name, "distance": current_depth + 1})
-                    further_downstream = await _trace_downstream_column(manifest, model_name_downstream, column_name, depth, current_depth + 1)
+                    further_downstream = await _trace_downstream_column(manifest, model_name_downstream, column_name, depth, dialect, current_depth + 1)
                     results.extend(further_downstream)
                 continue
 
@@ -597,6 +661,7 @@ async def _trace_downstream_column(
                         compiled_sql,
                         schema_mapping,
                         model_name_downstream,
+                        dialect,
                     )
 
                     logger.debug(f"[DOWNSTREAM] Check if {output_col_name} uses {model_name}.{column_name}")
@@ -608,7 +673,7 @@ async def _trace_downstream_column(
                         results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
 
                         # Recurse: trace this column further downstream
-                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
+                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, dialect, current_depth + 1)
                         results.extend(further_downstream)
                     else:
                         # Heuristic fallback when lineage doesn't resolve dependencies
@@ -616,7 +681,7 @@ async def _trace_downstream_column(
                             logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream}.{output_col_name} USES {model_name}.{column_name} (heuristic)")
                             results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
 
-                            further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
+                            further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, dialect, current_depth + 1)
                             results.extend(further_downstream)
                         else:
                             logger.debug(f"[DOWNSTREAM] ✗ {model_name_downstream}.{output_col_name} does NOT use {model_name}.{column_name}")
@@ -627,7 +692,7 @@ async def _trace_downstream_column(
                         logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream}.{output_col_name} USES {model_name}.{column_name} (heuristic)")
                         results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
 
-                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
+                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, dialect, current_depth + 1)
                         results.extend(further_downstream)
                     else:
                         logger.warning(f"Could not trace {model_name_downstream}.{output_col_name}: {e}")
@@ -696,6 +761,7 @@ def _analyze_column_lineage(
     compiled_sql: str,
     schema_mapping: dict[str, Any],
     model_name: str,
+    dialect: str = "databricks",
 ) -> Any:
     """Run sqlglot column lineage analysis (unified helper).
 
@@ -706,6 +772,7 @@ def _analyze_column_lineage(
         compiled_sql: Compiled SQL
         schema_mapping: Schema context for sqlglot
         model_name: Model name (for error messages)
+        dialect: SQL dialect for parsing (default: databricks)
 
     Returns:
         sqlglot lineage node
@@ -718,7 +785,7 @@ def _analyze_column_lineage(
             column=column_name,
             sql=compiled_sql,
             schema=schema_mapping,
-            dialect="databricks",
+            dialect=dialect,
         )
     except SqlglotError as e:
         raise ValueError(f"Failed to parse SQL for column lineage: {e}\nModel: {model_name}, Column: {column_name}")
@@ -732,6 +799,7 @@ def _trace_upstream_recursive(
     model_name: str,
     column_name: str,
     depth: int | None,
+    dialect: str = "databricks",
     current_depth: int = 0,
     relation_lookup: dict[str, str] | None = None,
     visited: set[str] | None = None,
@@ -749,6 +817,7 @@ def _trace_upstream_recursive(
         model_name: Model name to analyze
         column_name: Column name to trace
         depth: Maximum depth (None for unlimited)
+        dialect: SQL dialect for parsing (default: databricks)
         current_depth: Current recursion depth
         relation_lookup: FQN → unique_id mapping (built once, reused)
         visited: Set of visited unique_ids (prevent cycles)
@@ -788,6 +857,7 @@ def _trace_upstream_recursive(
             compiled_sql,
             schema_mapping,
             model_name,
+            dialect,
         )
     except ValueError as e:
         logger.warning(f"Could not analyze column {model_name}.{column_name}: {e}")
@@ -846,6 +916,7 @@ def _trace_upstream_recursive(
                 upstream_sql,
                 upstream_schema_mapping,
                 upstream_info,
+                dialect,
             )
 
             # Recurse per resolved output column
@@ -856,6 +927,7 @@ def _trace_upstream_recursive(
                         next_model,
                         output_column,
                         depth,
+                        dialect,
                         current_depth + 1,
                         relation_lookup,
                         visited,
@@ -872,6 +944,7 @@ def _trace_upstream_recursive(
                 next_model,
                 next_column,
                 depth,
+                dialect,
                 current_depth + 1,
                 relation_lookup,
                 visited,
@@ -966,20 +1039,26 @@ async def implementation(
     if resouce_info.get("multiple_matches"):
         raise ValueError(f"Multiple models found matching '{model_name}'. Please use unique_id: {[m['unique_id'] for m in resouce_info['matches']]}")
 
+    # Get SQL dialect from manifest metadata
+    project_info = state.manifest.get_project_info()
+    adapter_type = project_info.get("adapter_type", "databricks")
+    dialect = _map_dbt_adapter_to_sqlglot_dialect(adapter_type)
+    logger.info(f"Using SQL dialect '{dialect}' for adapter type '{adapter_type}'")
+
     if direction == "downstream":
         # Downstream only
-        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth)
+        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth, dialect)
         return _format_lineage_response(model_name, column_name, direction, [], downstream_usage)
 
     if direction == "upstream":
         # Upstream only
-        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth)
+        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth, dialect)
         return _format_lineage_response(model_name, column_name, direction, dependencies, None)
 
     else:  # direction == "both"
         # Both upstream and downstream
-        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth)
-        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth)
+        dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth, dialect)
+        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth, dialect)
         return _format_lineage_response(model_name, column_name, direction, dependencies, downstream_usage)
 
 
