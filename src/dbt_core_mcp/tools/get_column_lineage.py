@@ -9,9 +9,10 @@ from typing import Any
 
 from fastmcp.dependencies import Depends  # type: ignore[reportAttributeAccessIssue]
 from fastmcp.server.context import Context
-from sqlglot import parse_one
+from sqlglot import exp, parse_one
 from sqlglot.errors import SqlglotError
 from sqlglot.lineage import lineage
+from sqlglot.optimizer.scope import build_scope
 
 from ..context import DbtCoreServerContext
 from ..dbt.manifest import ManifestLoader
@@ -47,32 +48,148 @@ def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, 
 
     for upstream_node in upstream_lineage["upstream"]:
         try:
-            node_info = manifest.get_resource_info(upstream_node["unique_id"], include_database_schema=True, include_compiled_sql=False)
+            # Use node name, not unique_id (get_resource_info expects name)
+            node_name = upstream_node.get("name")
+            if not node_name:
+                continue
+
+            node_info = manifest.get_resource_info(node_name, resource_type="model", include_database_schema=True, include_compiled_sql=False)
 
             database = node_info.get("database", "").lower()
             schema = node_info.get("schema", "").lower()
             table = node_info.get("alias") or node_info.get("name", "").lower()
 
             if database and schema and table:
+                # Add columns with their types
+                columns = node_info.get("database_columns", [])
+                if not columns:
+                    manifest_columns = node_info.get("columns", {})
+                    if manifest_columns:
+                        columns = {col_name: {"type": (col_info.get("data_type") or col_info.get("type") or "string")} for col_name, col_info in manifest_columns.items()}
+
+                if not columns:
+                    continue
+
+                # Handle both list format (from database) and dict format (from manifest)
+                if isinstance(columns, list):
+                    # List format: [{"col_name": "customer_id", "type": "INTEGER"}]
+                    column_map = {col_info.get("col_name", "").lower(): col_info.get("type", "string").lower() for col_info in columns}
+                else:
+                    # Dict format: {"customer_id": {"type": "INTEGER"}}
+                    column_map = {col_name.lower(): col_info.get("type", "string").lower() for col_name, col_info in columns.items()}
+
+                if not column_map:
+                    continue
+
                 if database not in schema_mapping:
                     schema_mapping[database] = {}
                 if schema not in schema_mapping[database]:
                     schema_mapping[database][schema] = {}
 
-                # Add columns with their types
-                columns = node_info.get("database_columns", [])
-                # Handle both list format (from database) and dict format (from manifest)
-                if isinstance(columns, list):
-                    # List format: [{"col_name": "customer_id", "type": "INTEGER"}]
-                    schema_mapping[database][schema][table] = {col_info.get("col_name", "").lower(): col_info.get("type", "string").lower() for col_info in columns}
-                else:
-                    # Dict format: {"customer_id": {"type": "INTEGER"}}
-                    schema_mapping[database][schema][table] = {col_name.lower(): col_info.get("type", "string").lower() for col_name, col_info in columns.items()}
+                schema_mapping[database][schema][table] = column_map
         except Exception as e:
             logger.warning(f"Could not load schema for upstream node {upstream_node.get('unique_id')}: {e}")
             continue
 
     return schema_mapping
+
+
+def _find_table_columns(schema_mapping: dict[str, Any], table_name: str) -> list[str]:
+    """Find column names for a table in the schema mapping.
+
+    Args:
+        schema_mapping: Schema mapping in format {db: {schema: {table: {column: type}}}}
+        table_name: Table name to look up
+
+    Returns:
+        List of column names for the table
+    """
+    table_lower = table_name.lower()
+    for database_mapping in schema_mapping.values():
+        for schema_mapping_for_db in database_mapping.values():
+            if table_lower in schema_mapping_for_db:
+                return list(schema_mapping_for_db[table_lower].keys())
+    return []
+
+
+def _get_output_columns_from_sql(compiled_sql: str, schema_mapping: dict[str, Any]) -> list[str]:
+    """Extract output column names from compiled SQL.
+
+    Handles SELECT * from a single CTE or table by expanding from schema mapping
+    or the CTE's projections.
+
+    Args:
+        compiled_sql: Compiled SQL string
+        schema_mapping: Schema mapping for table expansion
+
+    Returns:
+        List of output column names
+    """
+    try:
+        ast = parse_one(compiled_sql, dialect="databricks")
+    except Exception:
+        return []
+
+    root_scope = build_scope(ast)
+    if not root_scope:
+        return []
+
+    select = root_scope.expression if isinstance(root_scope.expression, exp.Select) else root_scope.expression.find(exp.Select)
+    if not select:
+        return []
+
+    projections = list(select.expressions)
+    if projections and all(isinstance(p, exp.Star) for p in projections):
+        if len(root_scope.selected_sources) == 1:
+            _, (_, source) = next(iter(root_scope.selected_sources.items()))
+            if isinstance(source, exp.Table):
+                return _find_table_columns(schema_mapping, source.name)
+
+            # CTE or subquery scope
+            if hasattr(source, "expression"):
+                cte_select = source.expression if isinstance(source.expression, exp.Select) else source.expression.find(exp.Select)
+                if cte_select:
+                    return [proj.alias_or_name for proj in cte_select.expressions if proj.alias_or_name]
+        return []
+
+    return [proj.alias_or_name for proj in projections if proj.alias_or_name]
+
+
+def _resolve_output_columns(
+    compiled_sql: str,
+    schema_mapping: dict[str, Any],
+    resource_info: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Resolve output columns for a model using ordered fallbacks.
+
+    Order:
+    1) SQL-derived projections (including SELECT * expansion)
+    2) Warehouse columns (database_columns)
+    3) Manifest columns (schema.yml)
+
+    Returns:
+        (output_columns_dict, source_label)
+    """
+    output_columns_dict: dict[str, Any] = {}
+
+    output_columns = _get_output_columns_from_sql(compiled_sql, schema_mapping)
+    if output_columns:
+        return {col: {} for col in output_columns}, "sql"
+
+    database_columns = resource_info.get("database_columns", [])
+    if isinstance(database_columns, list) and database_columns:
+        output_columns_dict = {col.get("col_name", ""): {} for col in database_columns if col.get("col_name")}
+        if output_columns_dict:
+            return output_columns_dict, "warehouse"
+    elif isinstance(database_columns, dict) and database_columns:
+        return {col_name: {} for col_name in database_columns.keys()}, "warehouse"
+
+    manifest_columns = resource_info.get("columns", {})
+    output_columns_dict = {col_name: {} for col_name in manifest_columns.keys()}
+    if output_columns_dict:
+        return output_columns_dict, "manifest"
+
+    return {}, "none"
 
 
 def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, depth: int | None) -> list[dict[str, str]]:
@@ -139,6 +256,8 @@ def _check_column_in_lineage(lineage_node: Any, source_model: str, source_column
     Returns:
         True if the column appears in the lineage
     """
+    logger.debug(f"[LINEAGE_CHECK] Looking for {source_model}.{source_column}")
+
     for dep in lineage_node.walk():
         if hasattr(dep, "name"):
             # dep.name can be either "column_name" or "table.column_name"
@@ -146,21 +265,30 @@ def _check_column_in_lineage(lineage_node: Any, source_model: str, source_column
             col_name = name_parts[-1]  # Get the last part (column name)
             table_name = name_parts[0] if len(name_parts) > 1 else None
 
+            logger.debug(f"[LINEAGE_CHECK]   Checking dep.name='{dep.name}' -> col='{col_name}', table='{table_name}'")
+
             # Check if column matches
             if col_name == source_column.lower():
+                logger.debug("[LINEAGE_CHECK]   Column matches! Checking table...")
                 # If table name in dep.name, check it matches source_model
                 if table_name and source_model.lower() in table_name:
+                    logger.debug(f"[LINEAGE_CHECK]   ✓ Table in dep.name matches: {table_name} contains {source_model}")
                     return True
                 # If no table name in dep.name, check source attribute
                 elif hasattr(dep, "source") and hasattr(dep.source, "this"):
                     source_table = str(dep.source.this).strip('"').lower()
+                    logger.debug(f"[LINEAGE_CHECK]   Checking dep.source.this='{source_table}'")
                     if source_model.lower() in source_table:
+                        logger.debug(f"[LINEAGE_CHECK]   ✓ Source attribute matches: {source_table} contains {source_model}")
                         return True
+                else:
+                    logger.debug("[LINEAGE_CHECK]   ✗ Column matches but no table info found")
 
+    logger.debug(f"[LINEAGE_CHECK] ✗ No match found for {source_model}.{source_column}")
     return False
 
 
-def _trace_downstream_column(
+async def _trace_downstream_column(
     manifest: ManifestLoader,
     model_name: str,
     column_name: str,
@@ -179,6 +307,8 @@ def _trace_downstream_column(
     Returns:
         List of downstream usage dictionaries
     """
+    logger.info(f"[DOWNSTREAM] Tracing {model_name}.{column_name} at depth {current_depth}")
+
     if depth is not None and current_depth >= depth:
         return []
 
@@ -192,11 +322,22 @@ def _trace_downstream_column(
         return []
 
     downstream_models = lineage_data.get("downstream", [])
+    logger.info(f"[DOWNSTREAM] Found {len(downstream_models)} downstream models: {[m.get('name') for m in downstream_models]}")
 
     for downstream_model in downstream_models:
         # Only process models (skip tests, snapshots, etc.)
         if not downstream_model.get("unique_id", "").startswith("model."):
             continue
+
+        # Skip CTE unit test helper models (auto-generated by CTE test generator)
+        # Pattern: ends with __<6-char-hash> like customers_enriched__customer_agg__259035
+        model_name_check = downstream_model.get("name", "")
+        if model_name_check and len(model_name_check) > 8:
+            # Check if ends with __<6 hex chars>
+            suffix = model_name_check[-8:]
+            if suffix[:2] == "__" and all(c in "0123456789abcdef" for c in suffix[2:]):
+                logger.debug(f"Skipping CTE test model: {model_name_check}")
+                continue
 
         try:
             # Get downstream model info (schema + SQL)
@@ -204,11 +345,14 @@ def _trace_downstream_column(
             model_name_downstream = downstream_model["name"]
             downstream_info = manifest.get_resource_info(model_name_downstream, resource_type="model", include_database_schema=True, include_compiled_sql=True)
 
+            # All models compiled upfront, so we should have SQL now
             compiled_sql = downstream_info.get("compiled_sql")
-            output_columns = downstream_info.get("database_columns", [])
 
+            logger.info(f"[DOWNSTREAM] {model_name_downstream}: has_sql={compiled_sql is not None}")
+
+            # Skip if no compiled SQL (already compiled at start, so this shouldn't happen)
             if not compiled_sql:
-                logger.debug(f"No compiled SQL for {model_name_downstream}, skipping")
+                logger.warning(f"No compiled SQL for {model_name_downstream}, skipping")
                 continue
 
             # Build schema context for sqlglot
@@ -216,28 +360,79 @@ def _trace_downstream_column(
             upstream_lineage = manifest.get_lineage(model_name_downstream, resource_type="model", direction="upstream", depth=1)
             schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
 
+            logger.debug(f"[DOWNSTREAM] Schema for {model_name_downstream}: {schema_mapping}")
+
+            output_columns_dict, output_source = _resolve_output_columns(compiled_sql, schema_mapping, downstream_info)
+            if output_columns_dict:
+                logger.info(f"[DOWNSTREAM] {model_name_downstream}: using {len(output_columns_dict)} columns from {output_source}")
+            else:
+                # Fallback: use string search if no column metadata available
+                logger.debug(f"[DOWNSTREAM] {model_name_downstream}: No column metadata, using string search")
+                source_column_ref_patterns = [
+                    f"{model_name}.{column_name}",
+                    f".{column_name}",
+                    f" {column_name} ",
+                    f" {column_name},",
+                    f"({column_name}",
+                ]
+                sql_lower = compiled_sql.lower()
+                found_reference = any(pattern.lower() in sql_lower for pattern in source_column_ref_patterns)
+
+                if found_reference:
+                    logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream} references {model_name}.{column_name} (string search)")
+                    results.append({"model": model_name_downstream, "column": column_name, "distance": current_depth + 1})
+                    further_downstream = await _trace_downstream_column(manifest, model_name_downstream, column_name, depth, current_depth + 1)
+                    results.extend(further_downstream)
+                continue
+
             # Check each output column to see if it uses our source column
-            for output_col in output_columns:
-                col_name = output_col.get("col_name")
+            logger.debug(f"[DOWNSTREAM] {model_name_downstream}: checking {len(output_columns_dict)} output columns")
+            sql_lower = compiled_sql.lower()
+            source_column_ref_patterns = [
+                f"{model_name}.{column_name}",
+                f".{column_name}",
+                f" {column_name} ",
+                f" {column_name},",
+                f"({column_name}",
+            ]
 
-                if not col_name:
-                    continue
-
+            for output_col_name in output_columns_dict.keys():
                 try:
                     # Trace this output column's lineage
-                    column_lineage_result = lineage(column=col_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
+                    column_lineage_result = lineage(column=output_col_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
+
+                    logger.debug(f"[DOWNSTREAM] Check if {output_col_name} uses {model_name}.{column_name}")
 
                     # Check if our source column appears in the dependencies
                     if _check_column_in_lineage(column_lineage_result, model_name, column_name):
+                        logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream}.{output_col_name} USES {model_name}.{column_name}")
                         # This output column uses our source column!
-                        results.append({"model": model_name_downstream, "column": col_name, "distance": current_depth + 1})
+                        results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
 
                         # Recurse: trace this column further downstream
-                        further_downstream = _trace_downstream_column(manifest, model_name_downstream, col_name, depth, current_depth + 1)
+                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
                         results.extend(further_downstream)
+                    else:
+                        # Heuristic fallback when lineage doesn't resolve dependencies
+                        if output_col_name.lower() == column_name.lower() and any(pattern.lower() in sql_lower for pattern in source_column_ref_patterns):
+                            logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream}.{output_col_name} USES {model_name}.{column_name} (heuristic)")
+                            results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
+
+                            further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
+                            results.extend(further_downstream)
+                        else:
+                            logger.debug(f"[DOWNSTREAM] ✗ {model_name_downstream}.{output_col_name} does NOT use {model_name}.{column_name}")
 
                 except SqlglotError as e:
-                    logger.warning(f"Could not parse downstream SQL for {model_name_downstream}.{col_name}: {e}")
+                    # Heuristic fallback when sqlglot fails
+                    if output_col_name.lower() == column_name.lower() and any(pattern.lower() in sql_lower for pattern in source_column_ref_patterns):
+                        logger.info(f"[DOWNSTREAM] ✓ {model_name_downstream}.{output_col_name} USES {model_name}.{column_name} (heuristic)")
+                        results.append({"model": model_name_downstream, "column": output_col_name, "distance": current_depth + 1})
+
+                        further_downstream = await _trace_downstream_column(manifest, model_name_downstream, output_col_name, depth, current_depth + 1)
+                        results.extend(further_downstream)
+                    else:
+                        logger.warning(f"Could not trace {model_name_downstream}.{output_col_name}: {e}")
                     continue
 
         except Exception as e:
@@ -247,6 +442,59 @@ def _trace_downstream_column(
             continue
 
     return results
+
+
+def _trace_upstream_column(
+    manifest: ManifestLoader,
+    model_name: str,
+    column_name: str,
+    compiled_sql: str,
+    depth: int | None,
+) -> list[dict[str, Any]]:
+    """Trace where a column's data comes from (upstream dependencies).
+
+    Args:
+        manifest: ManifestLoader instance
+        model_name: Model name being analyzed
+        column_name: Column name to trace
+        compiled_sql: Compiled SQL of the model
+        depth: Maximum depth to traverse (None for unlimited)
+
+    Returns:
+        List of upstream dependencies
+
+    Raises:
+        ValueError: If SQL parsing fails
+    """
+    # Get upstream models to build schema context
+    try:
+        upstream_lineage = manifest.get_lineage(
+            model_name,
+            resource_type="model",
+            direction="upstream",
+            depth=1,  # Just immediate parents
+        )
+
+        # Build schema mapping for sqlglot
+        schema_mapping = _build_schema_mapping(manifest, upstream_lineage)
+    except (ValueError, KeyError, AttributeError) as e:
+        # Schema mapping is optional - sqlglot can work without it (just less context)
+        logger.warning(f"Could not build schema mapping: {e}")
+        schema_mapping = {}  # Continue with empty schema
+
+    # Use sqlglot to trace column lineage
+    try:
+        # Get lineage for the specific column
+        column_lineage_result = lineage(column=column_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
+
+        # Extract dependencies
+        return _extract_dependencies_from_lineage(column_lineage_result, manifest, depth)
+
+    except SqlglotError as e:
+        raise ValueError(f"Failed to parse SQL for column lineage: {e}\nModel: {model_name}, Column: {column_name}")
+    except Exception as e:
+        logger.exception("Unexpected error in column lineage analysis")
+        raise ValueError(f"Column lineage analysis failed: {e}")
 
 
 def _format_lineage_response(model_name: str, column_name: str, direction: str, dependencies: list[dict[str, str]], downstream_usage: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -298,85 +546,55 @@ async def implementation(
     if state.manifest is None:
         raise RuntimeError("Manifest not initialized")
 
-    # For downstream-only, we don't need the compiled SQL of the source model
-    if direction == "downstream":
-        # Just trace downstream usage
-        downstream_usage = _trace_downstream_column(state.manifest, model_name, column_name, depth)
-
-        return _format_lineage_response(
-            model_name,
-            column_name,
-            direction,
-            [],  # No upstream dependencies for downstream-only
-            downstream_usage,
-        )
-
-    # Get the model resource info with compiled SQL (for upstream or both)
-    resource_info = state.manifest.get_resource_info(model_name, resource_type="model", include_compiled_sql=True, include_database_schema=False)
-
-    # Handle multiple matches
-    if resource_info.get("multiple_matches"):
-        raise ValueError(f"Multiple models found matching '{model_name}'. Please use unique_id: {[m['unique_id'] for m in resource_info['matches']]}")
-
-    # Extract compiled SQL - trigger compilation if needed
-    compiled_sql = resource_info.get("compiled_sql")
-    if not compiled_sql and not resource_info.get("compiled_sql_cached"):
-        logger.info(f"Compiling model for column lineage: {model_name}")
+    # FIRST: Check if we have compiled code, compile ALL if needed
+    # Test source model to see if compilation is needed
+    resouce_info = state.manifest.get_resource_info(model_name, resource_type="model", include_compiled_sql=True)
+    compiled_sql = resouce_info.get("compiled_sql")
+    if not compiled_sql:
+        logger.info("No compiled SQL found - compiling entire project")
         runner = await state.get_runner()
-        compile_result = await runner.invoke_compile(model_name, force=False)
+        # Compile ALL models (dbt compile with no selector)
+        compile_result = await runner.invoke(["compile"])
 
         if compile_result.success:
             # Reload manifest to get compiled code
             await state.manifest.load()
             # Re-fetch the resource to get updated compiled_code
-            resource_info = state.manifest.get_resource_info(model_name, resource_type="model", include_compiled_sql=True, include_database_schema=False)
-            compiled_sql = resource_info.get("compiled_sql")
+            resouce_info = state.manifest.get_resource_info(
+                model_name,
+                resource_type="model",
+                include_database_schema=False,
+                include_compiled_sql=True,
+            )
+            compiled_sql = resouce_info.get("compiled_sql")
         else:
-            raise ValueError(f"Failed to compile model '{model_name}'. Check model SQL for errors.")
+            raise RuntimeError(f"Failed to compile project: {compile_result}")
 
+        logger.info("Project compiled successfully")
+
+    # We always need compiled SQL from this point.
     if not compiled_sql:
         raise ValueError(f"No compiled SQL found for model '{model_name}'. Model may not contain SQL code.")
 
-    # Get upstream models to build schema context
-    try:
-        upstream_lineage = state.manifest.get_lineage(
-            model_name,
-            resource_type="model",
-            direction="upstream",
-            depth=1,  # Just immediate parents
-        )
+    # Handle multiple matches (check AFTER compilation like get_resource_info does)
+    if resouce_info.get("multiple_matches"):
+        raise ValueError(f"Multiple models found matching '{model_name}'. Please use unique_id: {[m['unique_id'] for m in resouce_info['matches']]}")
 
-        # Build schema mapping for sqlglot
-        schema_mapping = _build_schema_mapping(state.manifest, upstream_lineage)
-    except (ValueError, KeyError, AttributeError) as e:
-        # Schema mapping is optional - sqlglot can work without it (just less context)
-        logger.warning(f"Could not build schema mapping: {e}")
-        schema_mapping = {}  # Continue with empty schema
+    if direction == "downstream":
+        # Downstream only
+        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth)
+        return _format_lineage_response(model_name, column_name, direction, [], downstream_usage)
 
-    # Use sqlglot to trace column lineage
-    try:
-        # Parse the SQL and get lineage for the specific column
-        parse_one(compiled_sql, dialect="databricks")
+    if direction == "upstream":
+        # Upstream only
+        dependencies = _trace_upstream_column(state.manifest, model_name, column_name, compiled_sql, depth)
+        return _format_lineage_response(model_name, column_name, direction, dependencies, None)
 
-        # Get lineage for the specific column
-        column_lineage_result = lineage(column=column_name, sql=compiled_sql, schema=schema_mapping, dialect="databricks")
-
-        # Extract dependencies
-        dependencies = _extract_dependencies_from_lineage(column_lineage_result, state.manifest, depth)
-
-        # Handle downstream if requested
-        downstream_usage: list[dict[str, Any]] | None = None
-        if direction == "both":
-            downstream_usage = _trace_downstream_column(state.manifest, model_name, column_name, depth)
-
-        # Format and return response
+    else:  # direction == "both"
+        # Both upstream and downstream
+        dependencies = _trace_upstream_column(state.manifest, model_name, column_name, compiled_sql, depth)
+        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth)
         return _format_lineage_response(model_name, column_name, direction, dependencies, downstream_usage)
-
-    except SqlglotError as e:
-        raise ValueError(f"Failed to parse SQL for column lineage: {e}\nModel: {model_name}, Column: {column_name}")
-    except Exception as e:
-        logger.exception("Unexpected error in column lineage analysis")
-        raise ValueError(f"Column lineage analysis failed: {e}")
 
 
 @dbtTool()

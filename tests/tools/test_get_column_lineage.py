@@ -10,6 +10,8 @@ from dbt_core_mcp.tools.get_column_lineage import (
     _build_schema_mapping,  # pyright: ignore[reportPrivateUsage]
     _extract_dependencies_from_lineage,  # pyright: ignore[reportPrivateUsage]
     _format_lineage_response,  # pyright: ignore[reportPrivateUsage]
+    _get_output_columns_from_sql,  # pyright: ignore[reportPrivateUsage]
+    _resolve_output_columns,  # pyright: ignore[reportPrivateUsage]
     implementation,
 )
 
@@ -31,8 +33,8 @@ def test_build_schema_mapping_with_upstream_models() -> None:
     # Mock manifest that returns resource info
     mock_manifest = Mock()
 
-    def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
-        if "stg_customers" in unique_id:
+    def mock_get_resource_info(name: str, **kwargs: Any) -> dict[str, Any]:
+        if "stg_customers" in name:
             return {
                 "database": "main",
                 "schema": "main",
@@ -43,7 +45,7 @@ def test_build_schema_mapping_with_upstream_models() -> None:
                     "first_name": {"type": "VARCHAR"},
                 },
             }
-        elif "stg_orders" in unique_id:
+        elif "stg_orders" in name:
             return {
                 "database": "main",
                 "schema": "main",
@@ -60,8 +62,8 @@ def test_build_schema_mapping_with_upstream_models() -> None:
 
     upstream_lineage = {
         "upstream": [
-            {"unique_id": "model.jaffle_shop.stg_customers"},
-            {"unique_id": "model.jaffle_shop.stg_orders"},
+            {"unique_id": "model.jaffle_shop.stg_customers", "name": "stg_customers"},
+            {"unique_id": "model.jaffle_shop.stg_orders", "name": "stg_orders"},
         ]
     }
 
@@ -91,6 +93,140 @@ def test_build_schema_mapping_empty_upstream() -> None:
     result = _build_schema_mapping(mock_manifest, empty_lineage)
 
     assert result == {}
+
+
+def test_build_schema_mapping_skips_empty_columns() -> None:
+    """Test schema mapping skips upstream nodes with empty columns."""
+    mock_manifest = Mock()
+
+    def mock_get_resource_info(name: str, **kwargs: Any) -> dict[str, Any]:
+        if name == "stg_customers":
+            return {
+                "database": "main",
+                "schema": "main",
+                "name": "stg_customers",
+                "alias": None,
+                "database_columns": [],
+            }
+        return {}
+
+    mock_manifest.get_resource_info = mock_get_resource_info
+
+    upstream_lineage = {
+        "upstream": [
+            {"unique_id": "model.jaffle_shop.stg_customers", "name": "stg_customers"},
+        ]
+    }
+
+    result = _build_schema_mapping(mock_manifest, upstream_lineage)
+
+    assert result == {}
+
+
+def test_build_schema_mapping_uses_manifest_columns() -> None:
+    """Test schema mapping falls back to manifest columns when database columns are missing."""
+    mock_manifest = Mock()
+
+    def mock_get_resource_info(name: str, **kwargs: Any) -> dict[str, Any]:
+        if name == "stg_customers":
+            return {
+                "database": "main",
+                "schema": "main",
+                "name": "stg_customers",
+                "alias": None,
+                "database_columns": [],
+                "columns": {
+                    "customer_id": {"data_type": "INTEGER"},
+                    "first_name": {"data_type": "VARCHAR"},
+                },
+            }
+        return {}
+
+    mock_manifest.get_resource_info = mock_get_resource_info
+
+    upstream_lineage = {
+        "upstream": [
+            {"unique_id": "model.jaffle_shop.stg_customers", "name": "stg_customers"},
+        ]
+    }
+
+    result = _build_schema_mapping(mock_manifest, upstream_lineage)
+
+    assert "main" in result
+    assert "stg_customers" in result["main"]["main"]
+    assert result["main"]["main"]["stg_customers"]["customer_id"] == "integer"
+
+
+def test_get_output_columns_from_sql_select_star_cte() -> None:
+    """Test output column extraction from SELECT * over a single CTE."""
+    sql = """
+    WITH base AS (
+        SELECT customer_id, first_name FROM raw_customers
+    )
+    SELECT * FROM base
+    """
+
+    result = _get_output_columns_from_sql(sql, {})
+
+    assert result == ["customer_id", "first_name"]
+
+
+def test_get_output_columns_from_sql_select_star_table() -> None:
+    """Test output column extraction from SELECT * over a single table using schema mapping."""
+    sql = "SELECT * FROM customers"
+    schema_mapping = {
+        "main": {
+            "main": {
+                "customers": {
+                    "customer_id": "integer",
+                    "first_name": "varchar",
+                }
+            }
+        }
+    }
+
+    result = _get_output_columns_from_sql(sql, schema_mapping)
+
+    assert set(result) == {"customer_id", "first_name"}
+
+
+def test_resolve_output_columns_prefers_sql() -> None:
+    """Test output column resolver prefers SQL-derived columns first."""
+    sql = "SELECT customer_id FROM customers"
+    schema_mapping: dict[str, Any] = {}
+    resource_info = {
+        "database_columns": [{"col_name": "ignored_col", "type": "INTEGER"}],
+        "columns": {"ignored_manifest": {"data_type": "INTEGER"}},
+    }
+
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+
+    assert source == "sql"
+    assert list(output_columns.keys()) == ["customer_id"]
+
+
+def test_resolve_output_columns_falls_back_to_warehouse_then_manifest() -> None:
+    """Test resolver falls back to warehouse columns, then manifest columns."""
+    sql = "SELECT * FROM customers"
+    schema_mapping: dict[str, Any] = {}
+
+    resource_info = {
+        "database_columns": [{"col_name": "warehouse_col", "type": "INTEGER"}],
+        "columns": {"manifest_col": {"data_type": "INTEGER"}},
+    }
+
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+    assert source == "warehouse"
+    assert list(output_columns.keys()) == ["warehouse_col"]
+
+    resource_info = {
+        "database_columns": [],
+        "columns": {"manifest_col": {"data_type": "INTEGER"}},
+    }
+
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+    assert source == "manifest"
+    assert list(output_columns.keys()) == ["manifest_col"]
 
 
 def test_extract_dependencies_from_lineage() -> None:
@@ -197,11 +333,13 @@ async def test_no_compiled_sql_error(mock_state: Mock) -> None:
     mock_runner = Mock()
     mock_result = Mock()
     mock_result.success = False
-    mock_runner.invoke_compile = AsyncMock(return_value=mock_result)
+    mock_runner.invoke = AsyncMock(return_value=mock_result)  # Changed from invoke_compile to invoke
     mock_state.get_runner = AsyncMock(return_value=mock_runner)
+    # Mock manifest load to handle reload after compilation
+    mock_state.manifest.load = AsyncMock()
 
     # Execute & Assert
-    with pytest.raises(ValueError, match="Failed to compile model"):
+    with pytest.raises(RuntimeError, match="Failed to compile project"):
         await implementation(
             ctx=None,
             model_name="customers",
@@ -216,13 +354,14 @@ async def test_no_compiled_sql_error(mock_state: Mock) -> None:
 @pytest.mark.asyncio
 async def test_multiple_matches_error(mock_state: Mock) -> None:
     """Test error when multiple models match the name."""
-    # Setup: multiple matches returned
+    # Setup: multiple matches returned with compiled_sql to avoid compilation path
     mock_state.manifest.get_resource_info.return_value = {
         "multiple_matches": True,
         "matches": [
             {"unique_id": "model.project1.customers"},
             {"unique_id": "model.project2.customers"},
         ],
+        "compiled_sql": "SELECT 1",  # Add this to avoid compilation check
     }
 
     # Execute & Assert
@@ -439,7 +578,7 @@ async def test_downstream_recursive_depth_2(mock_state: Mock) -> None:
 
     report_usage = next(d for d in downstream if d["model"] == "report")
     assert report_usage["distance"] == 2
-    assert report_usage["column"] == "cust_id"  # Renamed
+    assert report_usage["column"] == "cust_id"
 
 
 @pytest.mark.asyncio
