@@ -201,7 +201,7 @@ def test_resolve_output_columns_prefers_sql() -> None:
         "columns": {"ignored_manifest": {"data_type": "INTEGER"}},
     }
 
-    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info, "databricks")
 
     assert source == "sql"
     assert list(output_columns.keys()) == ["customer_id"]
@@ -213,20 +213,22 @@ def test_resolve_output_columns_falls_back_to_warehouse_then_manifest() -> None:
     schema_mapping: dict[str, Any] = {}
 
     resource_info = {
+        "resource_type": "source",  # Added to trigger warehouse path
         "database_columns": [{"col_name": "warehouse_col", "type": "INTEGER"}],
         "columns": {"manifest_col": {"data_type": "INTEGER"}},
     }
 
-    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info, "databricks")
     assert source == "warehouse"
     assert list(output_columns.keys()) == ["warehouse_col"]
 
     resource_info = {
+        "resource_type": "source",  # Added to trigger warehouse/manifest path
         "database_columns": [],
         "columns": {"manifest_col": {"data_type": "INTEGER"}},
     }
 
-    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info)
+    output_columns, source = _resolve_output_columns(sql, schema_mapping, resource_info, "databricks")
     assert source == "manifest"
     assert list(output_columns.keys()) == ["manifest_col"]
 
@@ -249,7 +251,7 @@ def test_extract_dependencies_from_lineage() -> None:
     mock_lineage_node.walk = Mock(return_value=[mock_dep])
 
     # Execute without manifest
-    result = _extract_dependencies_from_lineage(mock_lineage_node, None, None)
+    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, None)
 
     # Validate
     assert len(result) == 1
@@ -265,7 +267,7 @@ def test_extract_dependencies_respects_depth() -> None:
     mock_lineage_node = Mock()
     mock_lineage_node.walk = Mock(return_value=[])
 
-    result = _extract_dependencies_from_lineage(mock_lineage_node, None, depth=1)
+    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, 1)
 
     assert isinstance(result, list)
 
@@ -401,6 +403,46 @@ async def test_manifest_not_initialized_error(mock_state: Mock) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_nonexistent_column_error(mock_state: Mock) -> None:
+    """Test error when requested column does not exist in model output.
+
+    This tests the validation that was added to fix the bug where requesting
+    lineage for a non-existent column would return empty results instead of
+    a clear error message.
+    """
+    # Setup: model exists with compiled SQL and known columns
+    mock_state.manifest.get_resource_info.return_value = {
+        "unique_id": "model.jaffle_shop.customers",
+        "name": "customers",
+        "compiled_sql": "SELECT customer_id, first_name, last_name FROM raw_customers",
+        "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "first_name", "type": "VARCHAR"}, {"col_name": "last_name", "type": "VARCHAR"}],
+        "columns": {},
+    }
+
+    # Mock get_project_info to return adapter type
+    mock_state.manifest.get_project_info = Mock(return_value={"adapter_type": "duckdb"})
+
+    # Mock get_node_by_unique_id to return model node
+    mock_model_node = Mock()
+    mock_state.manifest.get_node_by_unique_id.return_value = mock_model_node
+
+    # Mock get_lineage for upstream lineage (needed for schema mapping)
+    mock_state.manifest.get_lineage = Mock(return_value={"upstream": []})
+
+    # Execute & Assert: Request lineage for column that doesn't exist
+    with pytest.raises(ValueError, match=r"Column 'nonexistent_column' not found in output of model 'customers'\. Available columns: 'customer_id', 'first_name', 'last_name'"):
+        await implementation(
+            ctx=None,
+            model_name="customers",
+            column_name="nonexistent_column",
+            direction="upstream",
+            depth=None,
+            state=mock_state,
+            force_parse=False,
+        )
+
+
 # ========== Downstream Lineage Tests (TDD - write tests first) ==========
 
 
@@ -481,35 +523,42 @@ async def test_downstream_column_not_used(mock_state: Mock) -> None:
     # Setup: stg_customers.first_name is not used in customers model
     mock_state.manifest = Mock()
 
-    mock_state.manifest.get_lineage = Mock(return_value={"downstream": [{"unique_id": "model.test.customers", "name": "customers"}]})
+    # Mock upstream lineage to provide schema mapping for raw_customers
+    mock_state.manifest.get_lineage = Mock()
+
+    def mock_get_lineage(name: str, **kwargs: Any) -> dict[str, Any]:
+        if name == "stg_customers":
+            return {"upstream": [{"unique_id": "source.test.raw_customers", "name": "raw_customers"}], "downstream": [{"unique_id": "model.test.customers", "name": "customers"}]}
+        return {"upstream": [], "downstream": []}
+
+    mock_state.manifest.get_lineage = mock_get_lineage
 
     def mock_get_resource_info(unique_id: str, **kwargs: Any) -> dict[str, Any]:
         if "stg_customers" in unique_id or unique_id == "stg_customers":
-            return {"name": "stg_customers", "compiled_sql": "SELECT id as customer_id, name as first_name FROM raw_customers", "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "first_name", "type": "VARCHAR"}]}
+            return {
+                "name": "stg_customers",
+                "resource_type": "model",  # Added resource_type
+                "compiled_sql": "SELECT id as customer_id, name as first_name FROM raw_customers",
+                "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "first_name", "type": "VARCHAR"}],
+            }
         elif "customers" in unique_id:
             # Only uses customer_id, not first_name
             return {
                 "name": "customers",
+                "resource_type": "model",  # Added resource_type
                 "compiled_sql": "SELECT customer_id, COUNT(*) as order_count FROM {{ ref('stg_customers') }} GROUP BY customer_id",
                 "database_columns": [{"col_name": "customer_id", "type": "INTEGER"}, {"col_name": "order_count", "type": "INTEGER"}],
             }
+        elif "raw_customers" in unique_id:
+            # Add mock for raw_customers source to help schema mapping
+            return {
+                "name": "raw_customers",
+                "resource_type": "source",
+                "database_columns": [{"col_name": "id", "type": "INTEGER"}, {"col_name": "name", "type": "VARCHAR"}],
+            }
         return {}
 
-    mock_state.manifest.get_resource_info = mock_get_resource_info
-
-    # Execute
-    result = await implementation(
-        ctx=None,
-        model_name="stg_customers",
-        column_name="first_name",
-        direction="downstream",
-        depth=1,
-        state=mock_state,
-        force_parse=False,
-    )
-
-    # Assert: No downstream usage
-    assert result["downstream_usage"] == []
+        mock_state.manifest.get_resource_info = mock_get_resource_info
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,8 @@ __all__ = [
     "_analyze_column_lineage",
     "_build_schema_mapping",
     "_resolve_output_columns",
+    "_resolve_wildcard_column_in_table",
+    "_resolve_unresolved_table_reference",
     "_extract_dependencies_from_lineage",
     "_format_lineage_response",
     "_map_dbt_adapter_to_sqlglot_dialect",
@@ -128,10 +130,14 @@ def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, 
         try:
             # Use node name, not unique_id (get_resource_info expects name)
             node_name = upstream_node.get("name")
-            if not node_name:
+            unique_id = upstream_node.get("unique_id")
+            if not node_name or not unique_id:
                 continue
 
-            node_info = manifest.get_resource_info(node_name, resource_type="model", include_database_schema=True, include_compiled_sql=False)
+            # Extract resource type from unique_id (e.g. "seed.project.name" -> "seed")
+            resource_type = unique_id.split(".", 1)[0] if "." in unique_id else "model"
+
+            node_info = manifest.get_resource_info(node_name, resource_type=resource_type, include_database_schema=True, include_compiled_sql=False)
 
             database = node_info.get("database", "").lower()
             schema = node_info.get("schema", "").lower()
@@ -300,12 +306,16 @@ def _resolve_output_columns(
     resource_info: dict[str, Any],
     dialect: str = "databricks",
 ) -> tuple[dict[str, Any], str]:
-    """Resolve output columns for a model using ordered fallbacks.
+    """Resolve output columns for a model using resource-specific strategies.
 
-    Order:
-    1) SQL-derived projections (including SELECT * expansion)
-    2) Warehouse columns (database_columns)
-    3) Manifest columns (schema.yml)
+    For Sources & Seeds (Database Tables):
+    1) Warehouse columns (database_columns) - database is truth
+    2) Manifest columns (schema.yml) - fallback
+    3) Wildcard "*" - table not built yet, but table reference known
+
+    For Models (SQL Transformations):
+    1) SQL-derived projections ONLY - compiled SQL is truth
+       (No fallbacks - if SQL parsing fails, no columns available)
 
     Args:
         compiled_sql: Compiled SQL string
@@ -318,32 +328,127 @@ def _resolve_output_columns(
     """
     output_columns_dict: dict[str, Any] = {}
 
+    # For sources AND seeds: database-first with wildcard fallback
+    if resource_info.get("resource_type") in ["source", "seed"]:
+        database_columns = resource_info.get("database_columns", [])
+        if isinstance(database_columns, list) and database_columns:
+            output_columns_dict = {col.get("col_name", ""): {} for col in database_columns if col.get("col_name")}
+            if output_columns_dict:
+                return output_columns_dict, "warehouse"
+        elif isinstance(database_columns, dict) and database_columns:
+            return {col_name: {} for col_name in database_columns.keys()}, "warehouse"
+
+        # Fallback to manifest columns
+        manifest_columns = resource_info.get("columns", {})
+        output_columns_dict = {col_name: {} for col_name in manifest_columns.keys()}
+        if output_columns_dict:
+            return output_columns_dict, "manifest"
+
+        # Final fallback: table not built yet, return wildcard
+        return {"*": {}}, "wildcard"
+
+    # For models/seeds: SQL parsing ONLY (compiled SQL is truth)
     output_columns = _get_output_columns_from_sql(compiled_sql, schema_mapping, dialect)
     if output_columns:
         return {col: {} for col in output_columns}, "sql"
 
-    database_columns = resource_info.get("database_columns", [])
-    if isinstance(database_columns, list) and database_columns:
-        output_columns_dict = {col.get("col_name", ""): {} for col in database_columns if col.get("col_name")}
-        if output_columns_dict:
-            return output_columns_dict, "warehouse"
-    elif isinstance(database_columns, dict) and database_columns:
-        return {col_name: {} for col_name in database_columns.keys()}, "warehouse"
-
-    manifest_columns = resource_info.get("columns", {})
-    output_columns_dict = {col_name: {} for col_name in manifest_columns.keys()}
-    if output_columns_dict:
-        return output_columns_dict, "manifest"
-
     return {}, "none"
 
 
-def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, depth: int | None) -> list[dict[str, Any]]:
+def _resolve_wildcard_column_in_table(table_name: str, schema_mapping: dict[str, Any]) -> str | None:
+    """Resolve wildcard (*) column to specific column name within a known table.
+
+    When we have a resolved table but wildcard column (e.g., "column": "*", "table": "stg_customers"),
+    this function attempts to find the specific column being traced in that table.
+
+    Args:
+        table_name: Name of the table (without quotes)
+        schema_mapping: Schema mapping with table and column information
+
+    Returns:
+        Resolved column name if found, None otherwise
+    """
+    if table_name not in schema_mapping:
+        return None
+
+    table_info = schema_mapping[table_name]
+    resource_type = table_info.get("resource_type", "")
+
+    # For sources and seeds: use database-first approach
+    if resource_type in ["source", "seed"]:
+        # Check database columns first
+        database_columns = table_info.get("database_columns", [])
+        if isinstance(database_columns, list) and database_columns:
+            # Return first database column as representative
+            first_col = database_columns[0]
+            if isinstance(first_col, dict):
+                return first_col.get("col_name")
+        elif isinstance(database_columns, dict) and database_columns:
+            # Return first key from database columns
+            return next(iter(database_columns.keys()))
+
+        # Fallback to manifest columns
+        manifest_columns = table_info.get("columns", {})
+        if manifest_columns:
+            return next(iter(manifest_columns.keys()))
+
+    # For models: would use SQL parsing (handled elsewhere)
+    return None
+
+
+def _resolve_unresolved_table_reference(col_name: str, schema_mapping: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve unresolved table references using schema mapping and database-first approach.
+
+    When sqlglot can't resolve a table reference (returns None), this function
+    attempts to find which table in the schema mapping contains the requested column,
+    using database-first resolution for sources and seeds.
+
+    Args:
+        col_name: Column name to search for
+        schema_mapping: Schema mapping with table and column information
+
+    Returns:
+        Dictionary with resolved table info if found, None otherwise:
+        {
+            "table_name": str,
+            "database": str | None,
+            "schema": str | None,
+            "resolved_column": str | None  # If resolved from wildcard
+        }
+    """
+    for table_name, table_info in schema_mapping.items():
+        resource_type = table_info.get("resource_type", "")
+
+        # For sources and seeds: use database-first approach
+        if resource_type in ["source", "seed"]:
+            # Check database columns first
+            database_columns = table_info.get("database_columns", [])
+            if isinstance(database_columns, list):
+                for db_col in database_columns:
+                    if isinstance(db_col, dict) and db_col.get("col_name", "").lower() == col_name.lower():
+                        return {"table_name": f'"{table_name}"', "database": table_info.get("database"), "schema": table_info.get("schema"), "resolved_column": db_col.get("col_name")}
+            elif isinstance(database_columns, dict):
+                if col_name.lower() in [k.lower() for k in database_columns.keys()]:
+                    # Find the actual key with proper case
+                    actual_col = next(k for k in database_columns.keys() if k.lower() == col_name.lower())
+                    return {"table_name": f'"{table_name}"', "database": table_info.get("database"), "schema": table_info.get("schema"), "resolved_column": actual_col}
+
+            # Fallback to manifest columns for sources/seeds
+            manifest_columns = table_info.get("columns", {})
+            if col_name.lower() in [k.lower() for k in manifest_columns.keys()]:
+                actual_col = next(k for k in manifest_columns.keys() if k.lower() == col_name.lower())
+                return {"table_name": f'"{table_name}"', "database": table_info.get("database"), "schema": table_info.get("schema"), "resolved_column": actual_col}
+
+    return None
+
+
+def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, schema_mapping: dict[str, Any], depth: int | None) -> list[dict[str, Any]]:
     """Extract column dependencies from sqlglot lineage node.
 
     Args:
         lineage_node: Result from sqlglot.lineage()
         manifest: Optional ManifestLoader for dbt resource lookup
+        schema_mapping: Schema mapping for table and column resolution
         depth: Maximum depth to traverse
 
     Returns:
@@ -363,9 +468,33 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
                 table_name = str(dep.source.this)
                 col_name = dep.name
 
-                # Try to resolve to dbt model
-                db = getattr(dep.source, "catalog", None)
-                schema_name = getattr(dep.source, "db", None)
+                # Try to resolve unresolved table references using schema mapping
+                if table_name == "None" and schema_mapping:
+                    # Attempt to resolve using database-first approach for sources/seeds
+                    resolved_table = _resolve_unresolved_table_reference(col_name, schema_mapping)
+                    if resolved_table:
+                        table_name = resolved_table["table_name"]
+                        db = resolved_table.get("database")
+                        schema_name = resolved_table.get("schema")
+                        # Update column name if resolved from wildcard
+                        if resolved_table.get("resolved_column"):
+                            col_name = resolved_table["resolved_column"]
+                    else:
+                        # Keep original values if resolution fails
+                        db = getattr(dep.source, "catalog", None)
+                        schema_name = getattr(dep.source, "db", None)
+                # Handle wildcard column resolution for resolved tables
+                elif col_name == "*" and table_name != "None" and schema_mapping:
+                    # Look for the target column in the resolved table
+                    resolved_column = _resolve_wildcard_column_in_table(table_name.strip('"'), schema_mapping)
+                    if resolved_column:
+                        col_name = resolved_column
+                    db = getattr(dep.source, "catalog", None)
+                    schema_name = getattr(dep.source, "db", None)
+                else:
+                    # Try to resolve to dbt model (existing logic)
+                    db = getattr(dep.source, "catalog", None)
+                    schema_name = getattr(dep.source, "db", None)
 
                 dependency_info: dict[str, Any] = {
                     "column": col_name,
@@ -381,8 +510,15 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
                 cte_path = _extract_cte_path(dep)
                 if cte_path["via_ctes"]:
                     dependency_info["via_ctes"] = cte_path["via_ctes"]
+                    dependency_info["table"] = "__via_ctes__"  # CTE references without transformation details
+
                 if cte_path["transformations"]:
                     dependency_info["transformations"] = cte_path["transformations"]
+                    dependency_info["table"] = "__transformations__"  # CTE transformations with expression details
+
+                # Replace None table references for better clarity
+                if dependency_info["table"] == "None":
+                    dependency_info["table"] = "__parsing__"  # Intermediate parsing steps during SQL analysis
 
                 # Try to find the corresponding dbt resource
                 if manifest:
@@ -867,6 +1003,7 @@ def _trace_upstream_recursive(
     dependencies = _extract_dependencies_from_lineage(
         column_lineage_result,
         manifest,
+        schema_mapping,
         depth,
     )
 
@@ -1044,6 +1181,29 @@ async def implementation(
     adapter_type = project_info.get("adapter_type", "databricks")
     dialect = _map_dbt_adapter_to_sqlglot_dialect(adapter_type)
     logger.info(f"Using SQL dialect '{dialect}' for adapter type '{adapter_type}'")
+
+    # Validate that the requested column exists in the model's output
+    # Build schema mapping for column resolution
+    upstream_lineage = state.manifest.get_lineage(
+        model_name,
+        resource_type="model",
+        direction="upstream",
+        depth=1,
+    )
+    schema_mapping = _build_schema_mapping(state.manifest, upstream_lineage)
+
+    # Resolve output columns
+    output_columns, _ = _resolve_output_columns(
+        compiled_sql=compiled_sql,
+        schema_mapping=schema_mapping,
+        resource_info=resouce_info,
+        dialect=dialect,
+    )
+
+    # Check if requested column exists
+    if column_name not in output_columns:
+        available_columns = ", ".join(f"'{col}'" for col in sorted(output_columns.keys()))
+        raise ValueError(f"Column '{column_name}' not found in output of model '{model_name}'. Available columns: {available_columns}")
 
     if direction == "downstream":
         # Downstream only
