@@ -27,6 +27,61 @@ from . import dbtTool
 
 logger = logging.getLogger(__name__)
 
+
+def _wrap_final_select(sql: str, column_name: str, dialect: str = "databricks") -> exp.Expression:
+    """Wrap the final SELECT in a CTE to enable lineage tracing through SELECT *.
+
+    Transforms:
+        SELECT * FROM final
+    Into:
+        WITH __lineage_final__ AS (SELECT * FROM final)
+        SELECT column_name FROM __lineage_final__
+
+    This allows lineage() to trace specific columns through schemaless queries.
+
+    Args:
+        sql: SQL query to wrap
+        column_name: Column to trace
+        dialect: SQL dialect
+
+    Returns:
+        Modified AST with wrapped final SELECT
+    """
+    ast = parse_one(sql, dialect=dialect)
+
+    # Get the root SELECT
+    root_select = ast if isinstance(ast, exp.Select) else ast.find(exp.Select)
+
+    if not root_select:
+        return ast
+
+    # Save the WITH clause before clearing
+    with_clause = root_select.args.get("with_")
+
+    # Copy entire root SELECT and strip its WITH
+    wrapper_select = root_select.copy()
+    wrapper_select.set("with_", None)
+
+    wrapper_cte = exp.CTE(this=wrapper_select, alias=exp.TableAlias(this=exp.Identifier(this="__lineage_final__")))
+
+    # Clear ALL args from root
+    for key in list(root_select.args.keys()):
+        root_select.set(key, None)
+
+    # Add wrapper to with_clause or create new one
+    if with_clause:
+        with_clause.expressions.append(wrapper_cte)
+    else:
+        with_clause = exp.With(expressions=[wrapper_cte])
+
+    # Rebuild root SELECT with only what we need
+    root_select.set("with_", with_clause)
+    root_select.set("expressions", [exp.Column(this=exp.Identifier(this=column_name))])
+    root_select.set("from_", exp.From(this=exp.Table(this=exp.Identifier(this="__lineage_final__"))))
+
+    return ast
+
+
 # Export for testing
 __all__ = [
     "implementation",
@@ -141,17 +196,25 @@ def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, 
 
             database = node_info.get("database", "").lower()
             schema = node_info.get("schema", "").lower()
-            table = node_info.get("alias") or node_info.get("name", "").lower()
+            # For sources, use identifier; for models/seeds, use alias or name
+            table = node_info.get("identifier") or node_info.get("alias") or node_info.get("name", "").lower()
+
+            logger.info(f"[DEBUG] Processing {unique_id}: db={database}, schema={schema}, table={table} (identifier={node_info.get('identifier')}, alias={node_info.get('alias')}, name={node_info.get('name')})")
 
             if database and schema and table:
                 # Add columns with their types
                 columns = node_info.get("database_columns", [])
-                if not columns:
-                    manifest_columns = node_info.get("columns", {})
-                    if manifest_columns:
-                        columns = {col_name: {"type": (col_info.get("data_type") or col_info.get("type") or "string")} for col_name, col_info in manifest_columns.items()}
+                logger.info(f"[DEBUG]   database_columns: {columns if columns else 'EMPTY'}")
 
                 if not columns:
+                    manifest_columns = node_info.get("columns", {})
+                    logger.info(f"[DEBUG]   manifest columns keys: {list(manifest_columns.keys()) if manifest_columns else 'EMPTY'}")
+                    if manifest_columns:
+                        columns = {col_name: {"type": (col_info.get("data_type") or col_info.get("type") or "string")} for col_name, col_info in manifest_columns.items()}
+                        logger.info(f"[DEBUG]   converted to: {columns}")
+
+                if not columns:
+                    logger.warning(f"[DEBUG]   SKIPPING {unique_id} - no columns found!")
                     continue
 
                 # Handle both list format (from database) and dict format (from manifest)
@@ -442,7 +505,12 @@ def _resolve_unresolved_table_reference(col_name: str, schema_mapping: dict[str,
     return None
 
 
-def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoader | None, schema_mapping: dict[str, Any], depth: int | None) -> list[dict[str, Any]]:
+def _extract_dependencies_from_lineage(
+    lineage_node: Any,
+    manifest: ManifestLoader | None,
+    schema_mapping: dict[str, Any],
+    depth: int | None,
+) -> list[dict[str, Any]]:
     """Extract column dependencies from sqlglot lineage node.
 
     Args:
@@ -457,6 +525,35 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
     """
     dependencies: list[dict[str, Any]] = []
 
+    # DEBUGGING: Let's understand the lineage node structure first
+    logger.info(f"[DEBUG] Root lineage node: name='{lineage_node.name}'")
+    logger.info(f"[DEBUG] Root node source_name: '{lineage_node.source_name}'")
+    logger.info(f"[DEBUG] Root node has {len(lineage_node.downstream)} downstream nodes")
+
+    # DEBUGGING: Check schema mapping
+    logger.info(f"[DEBUG] Schema mapping has {len(schema_mapping)} entries")
+    for table_name, table_schema in schema_mapping.items():
+        logger.info(f"[DEBUG] Schema mapping table: {table_name}")
+        if isinstance(table_schema, dict):
+            logger.info(f"[DEBUG]   Columns: {list(table_schema.keys())}")
+        else:
+            logger.info(f"[DEBUG]   Type: {type(table_schema)}")
+
+    # Walk through ALL nodes in the lineage tree using .walk()
+    all_nodes = list(lineage_node.walk())
+    logger.info(f"[DEBUG] Total nodes in lineage tree: {len(all_nodes)}")
+
+    for i, node in enumerate(all_nodes):
+        logger.info(f"[DEBUG] Node {i}: name='{node.name}', source_name='{node.source_name}'")
+        if hasattr(node.source, "this"):
+            logger.info(f"[DEBUG] Node {i} source.this: '{node.source.this}'")
+        logger.info(f"[DEBUG] Node {i} source type: {type(node.source).__name__}")
+        # Check if this is a table reference
+        if type(node.source).__name__ == "Table":
+            logger.info(f"[DEBUG] FOUND TABLE: Node {i} is a table reference!")
+        elif type(node.source).__name__ == "Placeholder":
+            logger.info(f"[DEBUG] PLACEHOLDER: Node {i} is unresolved - schema mapping issue?")
+
     def walk_dependencies(node: Any, depth_current: int = 0) -> None:
         """Recursively walk lineage tree."""
         if depth is not None and depth_current >= depth:
@@ -468,38 +565,53 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
                 table_name = str(dep.source.this)
                 col_name = dep.name
 
-                # Try to resolve unresolved table references using schema mapping
-                if table_name == "None" and schema_mapping:
-                    # Attempt to resolve using database-first approach for sources/seeds
-                    resolved_table = _resolve_unresolved_table_reference(col_name, schema_mapping)
-                    if resolved_table:
-                        table_name = resolved_table["table_name"]
-                        db = resolved_table.get("database")
-                        schema_name = resolved_table.get("schema")
-                        # Update column name if resolved from wildcard
-                        if resolved_table.get("resolved_column"):
-                            col_name = resolved_table["resolved_column"]
-                    else:
-                        # Keep original values if resolution fails
-                        db = getattr(dep.source, "catalog", None)
-                        schema_name = getattr(dep.source, "db", None)
-                # Handle wildcard column resolution for resolved tables
-                elif col_name == "*" and table_name != "None" and schema_mapping:
-                    # Look for the target column in the resolved table
-                    resolved_column = _resolve_wildcard_column_in_table(table_name.strip('"'), schema_mapping)
-                    if resolved_column:
-                        col_name = resolved_column
-                    db = getattr(dep.source, "catalog", None)
-                    schema_name = getattr(dep.source, "db", None)
-                else:
-                    # Try to resolve to dbt model (existing logic)
-                    db = getattr(dep.source, "catalog", None)
-                    schema_name = getattr(dep.source, "db", None)
+                logger.info(f"[DEBUG] Dependency: col='{col_name}', table_name='{table_name}', source={type(dep.source).__name__}")
+
+                # For Placeholder objects, the table name is unknown
+                if type(dep.source).__name__ == "Placeholder" and table_name == "None":
+                    logger.info(f"[DEBUG] Placeholder object with unknown table for column: {col_name}")
+                    # Keep None as table name for now
+
+                # Skip our artificial wrapper CTE
+                if table_name == "__lineage_final__":
+                    continue
+
+                # # Try to resolve unresolved table references using schema mapping
+                # if table_name == "None" and schema_mapping:
+                #     # Attempt to resolve using database-first approach for sources/seeds
+                #     resolved_table = _resolve_unresolved_table_reference(col_name, schema_mapping)
+                #     if resolved_table:
+                #         table_name = resolved_table["table_name"]
+                #         db = resolved_table.get("database")
+                #         schema_name = resolved_table.get("schema")
+                #         # Update column name if resolved from wildcard
+                #         if resolved_table.get("resolved_column"):
+                #             col_name = resolved_table["resolved_column"]
+                #     else:
+                #         # Keep original values if resolution fails
+                #         db = getattr(dep.source, "catalog", None)
+                #         schema_name = getattr(dep.source, "db", None)
+                # # Handle wildcard column resolution for resolved tables
+                # elif col_name == "*" and table_name != "None" and schema_mapping:
+                #     # Look for the target column in the resolved table
+                #     resolved_column = _resolve_wildcard_column_in_table(table_name.strip('"'), schema_mapping)
+                #     if resolved_column:
+                #         col_name = resolved_column
+                #     db = getattr(dep.source, "catalog", None)
+                #     schema_name = getattr(dep.source, "db", None)
+                # else:
+                #     # Try to resolve to dbt model (existing logic)
+                #     db = getattr(dep.source, "catalog", None)
+                #     schema_name = getattr(dep.source, "db", None)
 
                 dependency_info: dict[str, Any] = {
                     "column": col_name,
                     "table": table_name,
                 }
+
+                # Always extract db/schema metadata if available
+                db = getattr(dep.source, "catalog", None)
+                schema_name = getattr(dep.source, "db", None)
 
                 if db:
                     dependency_info["database"] = str(db)
@@ -508,17 +620,31 @@ def _extract_dependencies_from_lineage(lineage_node: Any, manifest: ManifestLoad
 
                 # Extract CTE transformation path
                 cte_path = _extract_cte_path(dep)
-                if cte_path["via_ctes"]:
-                    dependency_info["via_ctes"] = cte_path["via_ctes"]
-                    dependency_info["table"] = "__via_ctes__"  # CTE references without transformation details
 
+                # Clean wrapper CTE from paths (unwrap __lineage_final__)
+                if cte_path["via_ctes"]:
+                    cte_path["via_ctes"] = [c for c in cte_path["via_ctes"] if c != "__lineage_final__"]
                 if cte_path["transformations"]:
-                    dependency_info["transformations"] = cte_path["transformations"]
-                    dependency_info["table"] = "__transformations__"  # CTE transformations with expression details
+                    cleaned_transforms = []
+                    for t in cte_path["transformations"]:
+                        if t.get("cte") == "__lineage_final__":
+                            # Skip wrapper CTE transformations
+                            continue
+                        cleaned_transforms.append(t)
+                    cte_path["transformations"] = cleaned_transforms
+
+                # Temporarily commented out: internal CTE details
+                # if cte_path["via_ctes"]:
+                #     dependency_info["via_ctes"] = cte_path["via_ctes"]
+                #     dependency_info["table"] = "__via_ctes__"  # CTE references without transformation details
+
+                # if cte_path["transformations"]:
+                #     dependency_info["transformations"] = cte_path["transformations"]
+                #     dependency_info["table"] = "__transformations__"  # CTE transformations with expression details
 
                 # Replace None table references for better clarity
-                if dependency_info["table"] == "None":
-                    dependency_info["table"] = "__parsing__"  # Intermediate parsing steps during SQL analysis
+                # if dependency_info["table"] == "None":
+                #     dependency_info["table"] = "__parsing__"  # Intermediate parsing steps during SQL analysis
 
                 # Try to find the corresponding dbt resource
                 if manifest:
@@ -876,6 +1002,10 @@ def _prepare_model_analysis(
     if not compiled_sql:
         raise ValueError(f"No compiled SQL found for model '{model_name}'")
 
+    # DEBUG: Print compiled SQL to see what table names are actually there
+    logger.info(f"[DEBUG] Compiled SQL for {model_name}:")
+    logger.info(f"[DEBUG] {compiled_sql}")
+
     # Build schema mapping from upstream models
     try:
         upstream_lineage = manifest.get_lineage(
@@ -917,9 +1047,12 @@ def _analyze_column_lineage(
         ValueError: If SQL parsing fails
     """
     try:
+        # Wrap the SQL to enable lineage tracing through SELECT *
+        wrapped_ast = _wrap_final_select(compiled_sql, column_name, dialect)
+
         return lineage(
             column=column_name,
-            sql=compiled_sql,
+            sql=wrapped_ast,
             schema=schema_mapping,
             dialect=dialect,
         )
@@ -1007,6 +1140,10 @@ def _trace_upstream_recursive(
         depth,
     )
 
+    # DEBUG: Add compiled SQL to first dependency for inspection
+    if dependencies and len(dependencies) > 0:
+        dependencies[0]["debug_compiled_sql"] = compiled_sql[:500] + ("..." if len(compiled_sql) > 500 else "")
+
     # Resolve dependency FQNs to dbt resources
     for dependency in dependencies:
         if dependency.get("dbt_resource"):
@@ -1019,13 +1156,18 @@ def _trace_upstream_recursive(
     results = list(dependencies)
 
     # Recurse on each dependency
-    for dependency in dependencies:
+    for i, dependency in enumerate(dependencies):
         dbt_resource = dependency.get("dbt_resource")
         if not dbt_resource or dbt_resource in visited:
             continue
 
         node = manifest.get_node_by_unique_id(dbt_resource)
-        if not node or node.get("resource_type") != "model":
+        if not node:
+            continue
+
+        if node.get("resource_type") != "model":
+            # This is a source/seed - add it to results but don't recurse further
+            results.append(dependency)
             continue
 
         next_model = node.get("name")
@@ -1056,13 +1198,28 @@ def _trace_upstream_recursive(
                 dialect,
             )
 
-            # Recurse per resolved output column
-            for output_column in output_columns_dict.keys():
+            # Determine which column to trace through the wildcard
+            # Check previous dependency for the actual column name
+            if i > 0:
+                prev_dep = dependencies[i - 1]
+                # Try transformations first, then fall back to column field
+                if prev_dep.get("transformations"):
+                    column_to_trace = prev_dep["transformations"][0].get("column", column_name)
+                else:
+                    # Strip CTE prefix if present (e.g., "customers.customer_id" -> "customer_id")
+                    prev_column = prev_dep.get("column", "")
+                    column_to_trace = prev_column.split(".")[-1] if prev_column else column_name
+            else:
+                # No previous dependency - use original target column
+                column_to_trace = column_name
+
+            # Only trace the specific column we're looking for, not all columns
+            if column_to_trace in output_columns_dict:
                 results.extend(
                     _trace_upstream_recursive(
                         manifest,
                         next_model,
-                        output_column,
+                        column_to_trace,
                         depth,
                         dialect,
                         current_depth + 1,
