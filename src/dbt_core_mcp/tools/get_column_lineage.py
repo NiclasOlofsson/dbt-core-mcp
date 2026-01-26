@@ -92,6 +92,7 @@ __all__ = [
     "_resolve_output_columns",
     "_resolve_wildcard_column_in_table",
     "_resolve_unresolved_table_reference",
+    "_extract_transformations_with_sources",
     "_extract_dependencies_from_lineage",
     "_format_lineage_response",
     "_map_dbt_adapter_to_sqlglot_dialect",
@@ -202,7 +203,7 @@ def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, 
             if database and schema and table:
                 # Add columns with their types
                 columns = node_info.get("database_columns", [])
-                
+
                 if not columns:
                     manifest_columns = node_info.get("columns", {})
                     if manifest_columns:
@@ -494,11 +495,122 @@ def _resolve_unresolved_table_reference(col_name: str, schema_mapping: dict[str,
     return None
 
 
+def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, Any]]:
+    """Extract transformations with namespaced IDs, types, and source references.
+
+    Uses a two-pass approach:
+    1. First pass: Create all transformations and build lookup map
+    2. Second pass: Extract sources by parsing expressions for CTE/table references
+
+    Args:
+        lineage_node: Result from sqlglot.lineage()
+
+    Returns:
+        List of transformation dicts with structure:
+        {
+            "id": "cte:name" or "table:name",  # Namespaced identifier
+            "type": "cte" or "table",          # Type of transformation
+            "column": "column_name",           # Column being transformed
+            "expression": "...",               # Optional: how it's computed (if not pass-through)
+            "sources": ["cte:other", ...]      # Upstream dependencies
+        }
+    """
+    transform_map: dict[str, dict[str, Any]] = {}  # id -> transform dict
+    cte_to_id: dict[str, str] = {}  # cte_name -> transform id (for lookup)
+    nodes_with_data: list[tuple[str, Any, str]] = []  # (transform_id, node, expression)
+
+    # FIRST PASS: Create all transformations and build lookup map
+    for node in lineage_node.walk():
+        if not hasattr(node, "name") or not node.name or "." not in node.name:
+            continue
+
+        parts = node.name.split(".", 1)
+        cte_or_table = parts[0]
+        col_name = parts[1] if len(parts) > 1 else node.name
+
+        # Skip wrapper CTE used for lineage tracing
+        if cte_or_table == "__lineage_final__":
+            continue
+
+        source_type = type(node.source).__name__ if hasattr(node, "source") else None
+
+        # Create namespaced ID
+        if source_type == "Table":
+            transform_id = f"table:{cte_or_table}"
+            transform_type = "table"
+        else:
+            transform_id = f"cte:{cte_or_table}"
+            transform_type = "cte"
+
+        # Track CTE name -> ID for lookup in second pass
+        cte_to_id[cte_or_table] = transform_id
+
+        # Skip if we've already processed this transformation
+        if transform_id in transform_map:
+            # But save node data for sources extraction in second pass
+            if hasattr(node, "expression") and node.expression:
+                nodes_with_data.append((transform_id, node, str(node.expression)))
+            continue
+
+        # Build transformation
+        transform: dict[str, Any] = {
+            "id": transform_id,
+            "type": transform_type,
+            "column": col_name,
+        }
+
+        # Add expression if present and meaningful
+        if hasattr(node, "expression") and node.expression:
+            expr_sql = str(node.expression)
+            if expr_sql and expr_sql.strip() != col_name and len(expr_sql) <= 200:
+                transform["expression"] = expr_sql
+            elif len(expr_sql) > 200:
+                transform["expression"] = expr_sql[:197] + "..."
+
+        transform_map[transform_id] = transform
+
+        # Save for second pass
+        if hasattr(node, "expression") and node.expression:
+            expr_sql_str = str(node.expression)
+            nodes_with_data.append((transform_id, node, expr_sql_str if len(expr_sql_str) <= 200 else expr_sql_str[:200]))
+
+    # SECOND PASS: Extract sources by looking for CTE references in expressions
+    sources_map: dict[str, set[str]] = {}  # transform_id -> set of source ids
+
+    for transform_id, node, expr_str in nodes_with_data:
+        source_ids: set[str] = set()
+
+        # If it's a wildcard (SELECT *), get the table from the FROM clause
+        if expr_str.strip() == "*" and hasattr(node.source, "find"):
+            table_node = node.source.find(exp.Table)
+            if table_node and hasattr(table_node, "this"):
+                table_name = str(table_node.this)
+                source_ids.add(f"table:{table_name}")
+
+        # Look for CTE/table references in the expression (e.g., "orders.order_id")
+        for cte_name, cte_id in cte_to_id.items():
+            # Don't mark self-reference as a source
+            if cte_id != transform_id and f"{cte_name}." in expr_str:
+                source_ids.add(cte_id)
+
+        # Merge sources for this transformation (handle duplicates from multiple nodes)
+        sources_map.setdefault(transform_id, set()).update(source_ids)
+
+    # Build final list with sources
+    transformations: list[dict[str, Any]] = []
+    for trans in transform_map.values():
+        trans["sources"] = sorted(list(sources_map.get(trans["id"], set())))
+        transformations.append(trans)
+
+    return transformations
+
+
 def _extract_dependencies_from_lineage(
     lineage_node: Any,
     manifest: ManifestLoader | None,
     schema_mapping: dict[str, Any],
     depth: int | None,
+    column_name: str = "",
 ) -> list[dict[str, Any]]:
     """Extract column dependencies from sqlglot lineage node.
 
@@ -507,12 +619,14 @@ def _extract_dependencies_from_lineage(
         manifest: Optional ManifestLoader for dbt resource lookup
         schema_mapping: Schema mapping for table and column resolution
         depth: Maximum depth to traverse
+        column_name: Original column being traced (used to replace wildcards)
 
     Returns:
         List of dependency dicts with column, table, optional dbt_resource,
         and internal CTE transformation path (via_ctes, transformations)
     """
     dependencies: list[dict[str, Any]] = []
+    last_cte_column: dict[str, str] = {}  # Track last CTE column before each table
 
     def walk_dependencies(node: Any, depth_current: int = 0) -> None:
         """Recursively walk lineage tree."""
@@ -529,33 +643,25 @@ def _extract_dependencies_from_lineage(
                 if table_name == "__lineage_final__":
                     continue
 
-                # # Try to resolve unresolved table references using schema mapping
-                # if table_name == "None" and schema_mapping:
-                #     # Attempt to resolve using database-first approach for sources/seeds
-                #     resolved_table = _resolve_unresolved_table_reference(col_name, schema_mapping)
-                #     if resolved_table:
-                #         table_name = resolved_table["table_name"]
-                #         db = resolved_table.get("database")
-                #         schema_name = resolved_table.get("schema")
-                #         # Update column name if resolved from wildcard
-                #         if resolved_table.get("resolved_column"):
-                #             col_name = resolved_table["resolved_column"]
-                #     else:
-                #         # Keep original values if resolution fails
-                #         db = getattr(dep.source, "catalog", None)
-                #         schema_name = getattr(dep.source, "db", None)
-                # # Handle wildcard column resolution for resolved tables
-                # elif col_name == "*" and table_name != "None" and schema_mapping:
-                #     # Look for the target column in the resolved table
-                #     resolved_column = _resolve_wildcard_column_in_table(table_name.strip('"'), schema_mapping)
-                #     if resolved_column:
-                #         col_name = resolved_column
-                #     db = getattr(dep.source, "catalog", None)
-                #     schema_name = getattr(dep.source, "db", None)
-                # else:
-                #     # Try to resolve to dbt model (existing logic)
-                #     db = getattr(dep.source, "catalog", None)
-                #     schema_name = getattr(dep.source, "db", None)
+                # Track CTE columns (non-Table sources)
+                source_type = type(dep.source).__name__
+                if source_type != "Table":
+                    # This is a CTE/Select - track the column name for the next Table dependency
+                    # Extract column name from CTE-qualified references like "orders.order_id"
+                    if "." in col_name and col_name != "*":
+                        parts = col_name.split(".")
+                        cte_col = parts[-1]
+                        # Store the most recent non-wildcard column for the next table we'll encounter
+                        last_cte_column["__next_table__"] = cte_col
+
+                    # Extract from_table if the Select has a FROM clause with a table
+                    if hasattr(dep.source, "find") and callable(dep.source.find):
+                        from_table_node = dep.source.find(exp.Table)
+                        if from_table_node and hasattr(from_table_node, "this") and from_table_node.this:  # type: ignore[reportAttributeAccessIssue]
+                            from_table = str(from_table_node.this)  # type: ignore[reportAttributeAccessIssue]
+                            last_cte_column["__next_table_source__"] = from_table
+
+                    continue  # Don't add to dependencies yet
 
                 dependency_info: dict[str, Any] = {
                     "column": col_name,
@@ -571,33 +677,25 @@ def _extract_dependencies_from_lineage(
                 if schema_name:
                     dependency_info["schema"] = str(schema_name)
 
-                # Extract CTE transformation path
-                cte_path = _extract_cte_path(dep)
+                # This is a Table reference - add to dependencies
+                # Extract just the column name from potentially qualified references
+                # e.g., "customers.first_name" -> "first_name", "id" -> "id"
+                final_col_name = col_name.split(".")[-1] if col_name else col_name
 
-                # Clean wrapper CTE from paths (unwrap __lineage_final__)
-                if cte_path["via_ctes"]:
-                    cte_path["via_ctes"] = [c for c in cte_path["via_ctes"] if c != "__lineage_final__"]
-                if cte_path["transformations"]:
-                    cleaned_transforms = []
-                    for t in cte_path["transformations"]:
-                        if t.get("cte") == "__lineage_final__":
-                            # Skip wrapper CTE transformations
-                            continue
-                        cleaned_transforms.append(t)
-                    cte_path["transformations"] = cleaned_transforms
+                # Replace wildcard with the actual column being traced
+                if final_col_name == "*" and column_name:
+                    final_col_name = column_name
 
-                # Temporarily commented out: internal CTE details
-                # if cte_path["via_ctes"]:
-                #     dependency_info["via_ctes"] = cte_path["via_ctes"]
-                #     dependency_info["table"] = "__via_ctes__"  # CTE references without transformation details
+                # Check if we tracked a CTE column that feeds this table reference
+                if "__next_table__" in last_cte_column:
+                    source_column = last_cte_column["__next_table__"]
+                    # Use the source column as the actual column in this dependency
+                    final_col_name = source_column
+                    # Clear it after use
+                    del last_cte_column["__next_table__"]
 
-                # if cte_path["transformations"]:
-                #     dependency_info["transformations"] = cte_path["transformations"]
-                #     dependency_info["table"] = "__transformations__"  # CTE transformations with expression details
-
-                # Replace None table references for better clarity
-                # if dependency_info["table"] == "None":
-                #     dependency_info["table"] = "__parsing__"  # Intermediate parsing steps during SQL analysis
+                # Update dependency with clean column name
+                dependency_info["column"] = final_col_name
 
                 # Try to find the corresponding dbt resource
                 if manifest:
@@ -608,15 +706,10 @@ def _extract_dependencies_from_lineage(
                     except Exception:
                         pass  # Resource lookup failed, continue with table name
 
-                # Filter: Only keep actual table references, not intermediate CTE steps
-                source_type = type(dep.source).__name__
-                
-                # Keep if it's a Table reference with database context
-                if source_type == "Table" and db and schema_name:
-                    dependencies.append(dependency_info)
+                dependencies.append(dependency_info)
 
     walk_dependencies(lineage_node)
-    
+
     # Deduplicate dependencies while preserving order
     seen = set()
     deduplicated = []
@@ -626,7 +719,7 @@ def _extract_dependencies_from_lineage(
         if key not in seen:
             seen.add(key)
             deduplicated.append(dep)
-    
+
     return deduplicated
 
 
@@ -1101,17 +1194,17 @@ def _trace_upstream_recursive(
         logger.warning(f"Could not analyze column {model_name}.{column_name}: {e}")
         return []
 
+    # Extract root model transformations using new format (id, type, sources)
+    root_transformations = _extract_transformations_with_sources(column_lineage_result)
+
     # Extract dependencies and resolve to dbt resources
     dependencies = _extract_dependencies_from_lineage(
         column_lineage_result,
         manifest,
         schema_mapping,
         depth,
+        column_name,
     )
-
-    # DEBUG: Add compiled SQL to first dependency for inspection
-    if dependencies and len(dependencies) > 0:
-        dependencies[0]["debug_compiled_sql"] = compiled_sql[:500] + ("..." if len(compiled_sql) > 500 else "")
 
     # Resolve dependency FQNs to dbt resources
     for dependency in dependencies:
@@ -1122,7 +1215,58 @@ def _trace_upstream_recursive(
         if resolved:
             dependency["dbt_resource"] = resolved
 
+    # Enrich model dependencies with their internal transformations
+    for dependency in dependencies:
+        dbt_resource = dependency.get("dbt_resource")
+        if not dbt_resource:
+            continue
+
+        node = manifest.get_node_by_unique_id(dbt_resource)
+        if not node or node.get("resource_type") != "model":
+            continue
+
+        # Get the dependency model's internal transformations
+        dep_model_name = node.get("name")
+        dep_column = dependency.get("column", "")
+
+        if dep_model_name and dep_column:
+            try:
+                # Analyze the dependency model to get its internal CTEs
+                _, dep_compiled_sql, dep_schema_mapping = _prepare_model_analysis(manifest, dep_model_name)
+                dep_lineage = _analyze_column_lineage(dep_column, dep_compiled_sql, dep_schema_mapping, dep_model_name, dialect)
+
+                # Extract internal transformations using new format (id, type, sources)
+                internal_transformations = _extract_transformations_with_sources(dep_lineage)
+
+                # Replace the accumulated transformations with internal ones
+                if internal_transformations:
+                    dependency["transformations"] = internal_transformations
+                    # Update via_ctes to match (extract CTE ids)
+                    via_ctes = []
+                    for t in internal_transformations:
+                        if t.get("type") == "cte":
+                            # Remove namespace prefix for via_ctes backward compatibility
+                            cte_id = t.get("id", "")
+                            if cte_id.startswith("cte:"):
+                                cte_name = cte_id[4:]  # Strip "cte:" prefix
+                                if cte_name not in via_ctes:
+                                    via_ctes.append(cte_name)
+                    dependency["via_ctes"] = via_ctes
+
+            except Exception as e:
+                logger.warning(f"Could not extract internal transformations for {dep_model_name}.{dep_column}: {e}")
+                # Keep existing transformations if extraction fails
+
+    # Store results with root model transformations
     results = list(dependencies)
+
+    # Add root transformations metadata to each result (will be extracted by formatter)
+    if root_transformations and results:
+        for result in results:
+            result["__root_transformations__"] = root_transformations
+    elif root_transformations:
+        # No dependencies found, but we have root transformations - return them anyway
+        results = [{"__root_transformations__": root_transformations}]
 
     # Recurse on each dependency
     for i, dependency in enumerate(dependencies):
@@ -1135,7 +1279,7 @@ def _trace_upstream_recursive(
             continue
 
         if node.get("resource_type") != "model":
-            # This is a source/seed - already in results from line 1176, don't recurse
+            # This is a source/seed - already in results, don't recurse
             continue
 
         next_model = node.get("name")
@@ -1231,13 +1375,38 @@ def _format_lineage_response(model_name: str, column_name: str, direction: str, 
     Returns:
         Formatted response dict
     """
+    # Extract root transformations from dependencies (if present)
+    root_transformations = None
+    if dependencies and "__root_transformations__" in dependencies[0]:
+        root_transformations = dependencies[0]["__root_transformations__"]
+        # Remove from all dependencies (cleanup)
+        for dep in dependencies:
+            dep.pop("__root_transformations__", None)
+
     result: dict[str, Any] = {
         "model": model_name,
         "column": column_name,
         "direction": direction,
-        "dependencies": dependencies,
-        "dependency_count": len(dependencies),
     }
+
+    # Add root transformations if present
+    if root_transformations:
+        result["transformations"] = root_transformations
+        # Extract via_ctes from transformations (new format with id/type)
+        via_ctes = []
+        for t in root_transformations:
+            if t.get("type") == "cte":
+                # Extract CTE name from namespaced id (e.g., "cte:orders" -> "orders")
+                cte_id = t.get("id", "")
+                if cte_id.startswith("cte:"):
+                    cte_name = cte_id[4:]  # Strip "cte:" prefix
+                    if cte_name not in via_ctes:
+                        via_ctes.append(cte_name)
+        if via_ctes:
+            result["via_ctes"] = via_ctes
+
+    result["dependencies"] = dependencies
+    result["dependency_count"] = len(dependencies)
 
     if downstream_usage is not None:
         result["downstream_usage"] = downstream_usage

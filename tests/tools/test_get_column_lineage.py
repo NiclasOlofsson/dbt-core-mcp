@@ -235,13 +235,13 @@ def test_resolve_output_columns_falls_back_to_warehouse_then_manifest() -> None:
 
 def test_extract_dependencies_from_lineage() -> None:
     """Test dependency extraction from mocked sqlglot lineage node."""
+    # Import real sqlglot Table class for proper type checking
+    from sqlglot.expressions import Table
+
     # Mock a simple lineage node structure
     mock_dep = Mock()
-    mock_dep.source = Mock()
-    mock_dep.source.this = "raw_customers"
-    mock_dep.source.catalog = None
-    mock_dep.source.db = Mock()
-    mock_dep.source.db.__str__ = Mock(return_value="my_schema")
+    # Use real Table object with schema: Table(db="my_schema", this="raw_customers")
+    mock_dep.source = Table(db="my_schema", this="raw_customers")
     mock_dep.name = "id"
     mock_dep.downstream = None  # No parent node (end of chain)
     mock_dep.expression = Mock()
@@ -251,7 +251,7 @@ def test_extract_dependencies_from_lineage() -> None:
     mock_lineage_node.walk = Mock(return_value=[mock_dep])
 
     # Execute without manifest
-    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, None)
+    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, None, "")
 
     # Validate
     assert len(result) == 1
@@ -267,7 +267,7 @@ def test_extract_dependencies_respects_depth() -> None:
     mock_lineage_node = Mock()
     mock_lineage_node.walk = Mock(return_value=[])
 
-    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, 1)
+    result = _extract_dependencies_from_lineage(mock_lineage_node, None, {}, 1, "")
 
     assert isinstance(result, list)
 

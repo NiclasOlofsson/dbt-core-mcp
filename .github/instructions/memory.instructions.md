@@ -78,4 +78,4 @@ This file contains workspace-specific information for AI conversations.
 
 ### dbt-core-mcp Configuration
 
-- **2026-01-10 01:55:** MCP server logs are located at `$TEMP/dbt_core_mcp_logs/dbt_core_mcp.log` (on Windows: `%TEMP%\dbt_core_mcp_logs\dbt_core_mcp.log`). Configured in `src/dbt_core_mcp/__main__.py` `setup_logging()` function.
+- **2026-01-10 01:55:** MCP server logs are located at `/tmp/dbt_core_mcp_logs/dbt_core_mcp.log` (on Windows: `%TEMP%\dbt_core_mcp_logs\dbt_core_mcp.log`). Configured in `src/dbt_core_mcp/__main__.py` `setup_logging()` function.
