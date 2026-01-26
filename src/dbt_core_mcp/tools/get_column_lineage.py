@@ -199,27 +199,16 @@ def _build_schema_mapping(manifest: ManifestLoader, upstream_lineage: dict[str, 
             # For sources, use identifier; for models/seeds, use alias or name
             table = node_info.get("identifier") or node_info.get("alias") or node_info.get("name", "").lower()
 
-            logger.info(f"[DEBUG] Processing {unique_id}: db={database}, schema={schema}, table={table} (identifier={node_info.get('identifier')}, alias={node_info.get('alias')}, name={node_info.get('name')})")
-
             if database and schema and table:
                 # Add columns with their types
                 columns = node_info.get("database_columns", [])
-                logger.info(f"[DEBUG]   database_columns: {columns if columns else 'EMPTY'}")
-
+                
                 if not columns:
                     manifest_columns = node_info.get("columns", {})
-                    logger.info(f"[DEBUG]   manifest columns keys: {list(manifest_columns.keys()) if manifest_columns else 'EMPTY'}")
                     if manifest_columns:
                         columns = {col_name: {"type": (col_info.get("data_type") or col_info.get("type") or "string")} for col_name, col_info in manifest_columns.items()}
-                        logger.info(f"[DEBUG]   converted to: {columns}")
 
                 if not columns:
-                    logger.warning(f"[DEBUG]   SKIPPING {unique_id} - no columns found!")
-                    continue
-
-                # Handle both list format (from database) and dict format (from manifest)
-                if isinstance(columns, list):
-                    # List format: [{"col_name": "customer_id", "type": "INTEGER"}]
                     column_map = {col_info.get("col_name", "").lower(): col_info.get("type", "string").lower() for col_info in columns}
                 else:
                     # Dict format: {"customer_id": {"type": "INTEGER"}}
@@ -525,35 +514,6 @@ def _extract_dependencies_from_lineage(
     """
     dependencies: list[dict[str, Any]] = []
 
-    # DEBUGGING: Let's understand the lineage node structure first
-    logger.info(f"[DEBUG] Root lineage node: name='{lineage_node.name}'")
-    logger.info(f"[DEBUG] Root node source_name: '{lineage_node.source_name}'")
-    logger.info(f"[DEBUG] Root node has {len(lineage_node.downstream)} downstream nodes")
-
-    # DEBUGGING: Check schema mapping
-    logger.info(f"[DEBUG] Schema mapping has {len(schema_mapping)} entries")
-    for table_name, table_schema in schema_mapping.items():
-        logger.info(f"[DEBUG] Schema mapping table: {table_name}")
-        if isinstance(table_schema, dict):
-            logger.info(f"[DEBUG]   Columns: {list(table_schema.keys())}")
-        else:
-            logger.info(f"[DEBUG]   Type: {type(table_schema)}")
-
-    # Walk through ALL nodes in the lineage tree using .walk()
-    all_nodes = list(lineage_node.walk())
-    logger.info(f"[DEBUG] Total nodes in lineage tree: {len(all_nodes)}")
-
-    for i, node in enumerate(all_nodes):
-        logger.info(f"[DEBUG] Node {i}: name='{node.name}', source_name='{node.source_name}'")
-        if hasattr(node.source, "this"):
-            logger.info(f"[DEBUG] Node {i} source.this: '{node.source.this}'")
-        logger.info(f"[DEBUG] Node {i} source type: {type(node.source).__name__}")
-        # Check if this is a table reference
-        if type(node.source).__name__ == "Table":
-            logger.info(f"[DEBUG] FOUND TABLE: Node {i} is a table reference!")
-        elif type(node.source).__name__ == "Placeholder":
-            logger.info(f"[DEBUG] PLACEHOLDER: Node {i} is unresolved - schema mapping issue?")
-
     def walk_dependencies(node: Any, depth_current: int = 0) -> None:
         """Recursively walk lineage tree."""
         if depth is not None and depth_current >= depth:
@@ -564,13 +524,6 @@ def _extract_dependencies_from_lineage(
             if hasattr(dep, "source") and hasattr(dep.source, "this"):
                 table_name = str(dep.source.this)
                 col_name = dep.name
-
-                logger.info(f"[DEBUG] Dependency: col='{col_name}', table_name='{table_name}', source={type(dep.source).__name__}")
-
-                # For Placeholder objects, the table name is unknown
-                if type(dep.source).__name__ == "Placeholder" and table_name == "None":
-                    logger.info(f"[DEBUG] Placeholder object with unknown table for column: {col_name}")
-                    # Keep None as table name for now
 
                 # Skip our artificial wrapper CTE
                 if table_name == "__lineage_final__":
@@ -655,10 +608,26 @@ def _extract_dependencies_from_lineage(
                     except Exception:
                         pass  # Resource lookup failed, continue with table name
 
-                dependencies.append(dependency_info)
+                # Filter: Only keep actual table references, not intermediate CTE steps
+                source_type = type(dep.source).__name__
+                
+                # Keep if it's a Table reference with database context
+                if source_type == "Table" and db and schema_name:
+                    dependencies.append(dependency_info)
 
     walk_dependencies(lineage_node)
-    return dependencies
+    
+    # Deduplicate dependencies while preserving order
+    seen = set()
+    deduplicated = []
+    for dep in dependencies:
+        # Create a key for deduplication
+        key = (dep.get("column"), dep.get("table"), dep.get("database"), dep.get("schema"))
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(dep)
+    
+    return deduplicated
 
 
 def _extract_cte_path(lineage_node: Any) -> dict[str, Any]:
@@ -1166,8 +1135,7 @@ def _trace_upstream_recursive(
             continue
 
         if node.get("resource_type") != "model":
-            # This is a source/seed - add it to results but don't recurse further
-            results.append(dependency)
+            # This is a source/seed - already in results from line 1176, don't recurse
             continue
 
         next_model = node.get("name")
