@@ -518,6 +518,7 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
     transform_map: dict[str, dict[str, Any]] = {}  # id -> transform dict
     cte_to_id: dict[str, str] = {}  # cte_name -> transform id (for lookup)
     nodes_with_data: list[tuple[str, Any, str]] = []  # (transform_id, node, expression)
+    outer_query_sources: set[str] = set()  # Track what the outer query references
 
     # FIRST PASS: Create all transformations and build lookup map
     for node in lineage_node.walk():
@@ -528,8 +529,19 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
         cte_or_table = parts[0]
         col_name = parts[1] if len(parts) > 1 else node.name
 
-        # Skip wrapper CTE used for lineage tracing
+        # Special handling for wrapper CTE - extract what the outer query references
         if cte_or_table == "__lineage_final__":
+            # Extract what __lineage_final__ references (the actual final CTE)
+            if hasattr(node, "expression") and node.expression:
+                expr_str = str(node.expression)
+                # Expression will be like "final.customer_id" or just a column reference
+                # Look for CTE references in the expression
+                for potential_cte in expr_str.split():
+                    if "." in potential_cte:
+                        # Could be "final.customer_id" - extract "final"
+                        ref_cte = potential_cte.split(".")[0].strip("(),")
+                        if ref_cte and not ref_cte.isdigit():
+                            outer_query_sources.add(f"cte:{ref_cte}")
             continue
 
         source_type = type(node.source).__name__ if hasattr(node, "source") else None
@@ -601,6 +613,15 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
     for trans in transform_map.values():
         trans["sources"] = sorted(list(sources_map.get(trans["id"], set())))
         transformations.append(trans)
+
+    # Add outer query transformation if we detected it
+    if outer_query_sources:
+        # Extract column name from any transformation (they all have the same column)
+        column_for_query = next((t.get("column") for t in transformations), "")
+
+        outer_query: dict[str, Any] = {"id": "query", "type": "outer_query", "column": column_for_query, "sources": sorted(list(outer_query_sources))}
+        # Insert at the beginning (outer query is first in the chain)
+        transformations.insert(0, outer_query)
 
     return transformations
 
@@ -1084,6 +1105,94 @@ def _prepare_model_analysis(
     return resource_info, compiled_sql, schema_mapping
 
 
+def _clean_static_union_branches(ast: exp.Expression, column_name: str, dialect: str) -> exp.Expression:
+    """Remove UNION branches that contain only static literal values.
+
+    When a UNION fails during lineage tracing due to index errors, it's often
+    because one branch has all static values (e.g., '-1' as gold_itemkey) while
+    another has dynamic column references. This function removes all-static branches
+    to allow lineage tracing to proceed.
+
+    Args:
+        ast: The SQL AST to clean
+        column_name: Column being traced (for logging)
+        dialect: SQL dialect
+
+    Returns:
+        Cleaned AST with static UNION branches removed
+    """
+    # Find all UNION nodes (they appear as Union expressions)
+    unions_found = list(ast.find_all(exp.Union))
+
+    if not unions_found:
+        return ast  # No UNIONs to clean
+
+    logger.debug(f"Found {len(unions_found)} UNION nodes to analyze")
+
+    for union_node in unions_found:
+        # UNION in sqlglot is binary: has 'this' (left) and 'expression' (right)
+        left_branch = union_node.this
+        right_branch = union_node.expression
+
+        # Check if each branch is all-static (contains only literals)
+        left_is_static = _is_all_static_branch(left_branch)
+        right_is_static = _is_all_static_branch(right_branch)
+
+        logger.debug(f"UNION branch analysis: left_static={left_is_static}, right_static={right_is_static}")
+
+        if left_is_static and not right_is_static:
+            # Keep only right branch
+            logger.info(f"Removing static left UNION branch for column {column_name}")
+            union_node.replace(right_branch)
+        elif right_is_static and not left_is_static:
+            # Keep only left branch
+            logger.info(f"Removing static right UNION branch for column {column_name}")
+            union_node.replace(left_branch)
+        elif left_is_static and right_is_static:
+            # Both static - this is unusual but keep left by convention
+            logger.warning(f"Both UNION branches are static for column {column_name}, keeping left")
+            union_node.replace(left_branch)
+        # else: both dynamic, keep the UNION as-is
+
+    return ast
+
+
+def _is_all_static_branch(branch: exp.Expression) -> bool:
+    """Check if a SELECT branch contains only static literal expressions.
+
+    Args:
+        branch: A SELECT expression to analyze
+
+    Returns:
+        True if all SELECT expressions are literals, False otherwise
+    """
+    # Find the SELECT node in this branch
+    if isinstance(branch, exp.Select):
+        select_node = branch
+    else:
+        select_node = branch.find(exp.Select)
+
+    if not select_node:
+        return False
+
+    # Check all expressions in the SELECT clause
+    for select_expr in select_node.expressions:
+        # Get the actual expression (might be wrapped in Alias)
+        if isinstance(select_expr, exp.Alias):
+            actual_expr = select_expr.this
+        else:
+            actual_expr = select_expr
+
+        # If we find any non-literal, this branch is dynamic
+        if not isinstance(actual_expr, exp.Literal):
+            # Also check for NULL which is represented differently
+            if not (isinstance(actual_expr, exp.Null)):
+                return False
+
+    # All expressions are literals
+    return True
+
+
 def _analyze_column_lineage(
     column_name: str,
     compiled_sql: str,
@@ -1091,9 +1200,11 @@ def _analyze_column_lineage(
     model_name: str,
     dialect: str = "databricks",
 ) -> Any:
-    """Run sqlglot column lineage analysis (unified helper).
+    """Run sqlglot column lineage analysis with automatic UNION cleanup.
 
-    Consistent error handling for both upstream and downstream directions.
+    Tries lineage analysis, and if it fails due to UNION structure issues (IndexError),
+    automatically cleans static UNION branches and retries. This handles the common
+    data warehouse pattern of UNION ALL with hardcoded default rows.
 
     Args:
         column_name: Column to analyze
@@ -1106,18 +1217,43 @@ def _analyze_column_lineage(
         sqlglot lineage node
 
     Raises:
-        ValueError: If SQL parsing fails
+        ValueError: If SQL parsing fails or UNION cleanup doesn't resolve issues
     """
     try:
         # Wrap the SQL to enable lineage tracing through SELECT *
         wrapped_ast = _wrap_final_select(compiled_sql, column_name, dialect)
 
-        return lineage(
-            column=column_name,
-            sql=wrapped_ast,
-            schema=schema_mapping,
-            dialect=dialect,
-        )
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                result = lineage(
+                    column=column_name,
+                    sql=wrapped_ast,
+                    schema=schema_mapping,
+                    dialect=dialect,
+                )
+
+                # Test the result by walking the tree to trigger any IndexError
+                for _ in result.walk():
+                    pass
+
+                if attempt > 0:
+                    logger.info(f"Lineage succeeded after {attempt} UNION cleanup attempt(s) for {model_name}.{column_name}")
+
+                return result  # Success!
+
+            except IndexError as e:
+                if "index out of range" in str(e).lower():
+                    if attempt == max_attempts - 1:
+                        raise ValueError(f"UNION structure issue in {model_name}.{column_name} after {max_attempts} cleanup attempts: {e}")
+
+                    logger.info(f"UNION index error detected for {model_name}.{column_name}, cleaning static branches (attempt {attempt + 1})")
+                    # Clean the AST and retry
+                    wrapped_ast = _clean_static_union_branches(wrapped_ast, column_name, dialect)
+                else:
+                    # Different kind of IndexError, re-raise
+                    raise
+
     except SqlglotError as e:
         raise ValueError(f"Failed to parse SQL for column lineage: {e}\nModel: {model_name}, Column: {column_name}")
     except Exception as e:
