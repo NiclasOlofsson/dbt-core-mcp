@@ -128,10 +128,18 @@ new_customers as (
 ),
 
 -- CTE 9: Combine dynamic branches
-all_segments as (
+all_segments_union as (
     select * from active_customers
     union all
     select * from new_customers
+),
+
+-- CTE 9.5: Combine dynamic branches
+all_segments as (
+    select * from all_segments_union
+    union all
+    select * from all_segments_union
+
 ),
 
 -- CTE 10: Final transformation with complex expression

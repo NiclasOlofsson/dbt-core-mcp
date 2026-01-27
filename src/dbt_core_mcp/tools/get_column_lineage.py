@@ -519,10 +519,35 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
     cte_to_id: dict[str, str] = {}  # cte_name -> transform id (for lookup)
     nodes_with_data: list[tuple[str, Any, str]] = []  # (transform_id, node, expression)
     outer_query_sources: set[str] = set()  # Track what the outer query references
+    union_branches: dict[str, list[dict[str, Any]]] = {}  # reference_node_name -> list of branch info
 
     # FIRST PASS: Create all transformations and build lookup map
     for node in lineage_node.walk():
-        if not hasattr(node, "name") or not node.name or "." not in node.name:
+        if not hasattr(node, "name") or not node.name:
+            continue
+
+        # Handle numeric nodes (UNION branches)
+        if "." not in node.name:
+            # Check if this is a UNION branch node (has reference_node_name attribute)
+            if hasattr(node, "reference_node_name") and node.reference_node_name:
+                ref_cte = node.reference_node_name
+
+                # Extract expression and sources from this branch
+                branch_info: dict[str, Any] = {}
+                if hasattr(node, "expression") and node.expression:
+                    expr_str = str(node.expression)
+                    branch_info["expression"] = expr_str if len(expr_str) <= 200 else expr_str[:197] + "..."
+
+                    # Extract column name (will be used for the union transformation)
+                    # Expression is like "all_segments_union.customer_id AS customer_id"
+                    if " AS " in expr_str:
+                        branch_info["column"] = expr_str.split(" AS ")[-1].strip()
+
+                    # Store full expression for sources extraction later
+                    branch_info["_full_expr"] = expr_str
+
+                # Group branches by their parent CTE
+                union_branches.setdefault(ref_cte, []).append(branch_info)
             continue
 
         parts = node.name.split(".", 1)
@@ -531,31 +556,39 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
 
         # Special handling for wrapper CTE - extract what the outer query references
         if cte_or_table == "__lineage_final__":
-            # Extract what __lineage_final__ references (the actual final CTE)
+            # Extract what __lineage_final__ references (could be CTE or table)
             if hasattr(node, "expression") and node.expression:
                 expr_str = str(node.expression)
-                # Expression will be like "final.customer_id" or just a column reference
-                # Look for CTE references in the expression
-                for potential_cte in expr_str.split():
-                    if "." in potential_cte:
-                        # Could be "final.customer_id" - extract "final"
-                        ref_cte = potential_cte.split(".")[0].strip("(),")
-                        if ref_cte and not ref_cte.isdigit():
-                            outer_query_sources.add(f"cte:{ref_cte}")
+                # Expression will be like "final.customer_id" (CTE) or "si.gold_itemkey" (table alias)
+                # Look for references in the expression
+                for potential_ref in expr_str.split():
+                    if "." in potential_ref:
+                        # Could be "final.customer_id" or "si.gold_itemkey"
+                        ref_name = potential_ref.split(".")[0].strip("(),")
+                        if ref_name and not ref_name.isdigit():
+                            # Try as CTE first, then as table
+                            # We'll resolve the actual type in the second pass
+                            outer_query_sources.add(ref_name)
             continue
 
         source_type = type(node.source).__name__ if hasattr(node, "source") else None
 
-        # Create namespaced ID
+        # Get the actual CTE/table name (not the alias)
+        # node.name might be "alias.column" but node.source.this has the real name
+        actual_cte_or_table = cte_or_table  # default to parsed name
+        if hasattr(node.source, "this") and node.source.this:
+            actual_cte_or_table = str(node.source.this)
+
+        # Create namespaced ID using the actual CTE/table name
         if source_type == "Table":
-            transform_id = f"table:{cte_or_table}"
+            transform_id = f"table:{actual_cte_or_table}"
             transform_type = "table"
         else:
-            transform_id = f"cte:{cte_or_table}"
+            transform_id = f"cte:{actual_cte_or_table}"
             transform_type = "cte"
 
-        # Track CTE name -> ID for lookup in second pass
-        cte_to_id[cte_or_table] = transform_id
+        # Track CTE name -> ID for lookup in second pass (use actual name, not alias)
+        cte_to_id[actual_cte_or_table] = transform_id
 
         # Skip if we've already processed this transformation
         if transform_id in transform_map:
@@ -586,6 +619,51 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
             expr_sql_str = str(node.expression)
             nodes_with_data.append((transform_id, node, expr_sql_str if len(expr_sql_str) <= 200 else expr_sql_str[:200]))
 
+    # Process UNION branches in two passes
+    # FIRST: Register all union CTEs in cte_to_id
+    for ref_cte, branches in union_branches.items():
+        if not branches:
+            continue
+        transform_id = f"cte:{ref_cte}"
+        cte_to_id[ref_cte] = transform_id
+
+    # SECOND: Create union transformations with sources
+    for ref_cte, branches in union_branches.items():
+        if not branches:
+            continue
+
+        # Create union transformation
+        transform_id = f"cte:{ref_cte}"
+        column = branches[0].get("column", "")  # All branches have same column
+
+        # Build branches array with sources
+        formatted_branches: list[dict[str, Any]] = []
+        for branch_info in branches:
+            branch_entry: dict[str, Any] = {}
+            if "expression" in branch_info:
+                branch_entry["expression"] = branch_info["expression"]
+
+            # Extract sources for this branch (now all unions are in cte_to_id)
+            source_ids: set[str] = set()
+            full_expr = branch_info.get("_full_expr", "")
+            if full_expr:
+                for cte_name in cte_to_id.keys():
+                    if f"{cte_name}." in full_expr:
+                        source_ids.add(cte_to_id[cte_name])
+
+            branch_entry["sources"] = sorted(list(source_ids))
+            formatted_branches.append(branch_entry)
+
+        # Create the union transformation
+        union_transform: dict[str, Any] = {
+            "id": transform_id,
+            "type": "union",
+            "column": column,
+            "branches": formatted_branches,
+        }
+
+        transform_map[transform_id] = union_transform
+
     # SECOND PASS: Extract sources by looking for CTE references in expressions
     sources_map: dict[str, set[str]] = {}  # transform_id -> set of source ids
 
@@ -605,13 +683,44 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
             if cte_id != transform_id and f"{cte_name}." in expr_str:
                 source_ids.add(cte_id)
 
+        # Also check if expression uses an alias - resolve to actual CTE/table
+        # e.g., expression "seg.customer_id" where seg is alias for all_segments
+        if "." in expr_str and hasattr(node, "source"):
+            # Extract the prefix (potential alias)
+            alias_candidate = expr_str.split(".")[0].strip()
+
+            # Try to resolve it from the source
+            if hasattr(node.source, "find"):
+                table_node = node.source.find(exp.Table)
+                if table_node:
+                    actual_name = None
+                    # Get the actual table/CTE name
+                    if hasattr(table_node, "this") and table_node.this:
+                        actual_name = str(table_node.this)
+
+                    # Get the alias
+                    if hasattr(table_node, "alias_or_name"):
+                        alias = str(table_node.alias_or_name)
+
+                        # If expression uses this alias, resolve to actual name
+                        # Include alias in output as cte:name[alias] or table:name[alias]
+                        if alias == alias_candidate and actual_name and actual_name in cte_to_id:
+                            base_id = cte_to_id[actual_name]
+                            # Add alias notation if alias differs from actual name
+                            if alias != actual_name:
+                                source_ids.add(f"{base_id}[{alias}]")
+                            else:
+                                source_ids.add(base_id)
+
         # Merge sources for this transformation (handle duplicates from multiple nodes)
         sources_map.setdefault(transform_id, set()).update(source_ids)
 
     # Build final list with sources
     transformations: list[dict[str, Any]] = []
     for trans in transform_map.values():
-        trans["sources"] = sorted(list(sources_map.get(trans["id"], set())))
+        # Union types already have sources in branches, don't add top-level sources
+        if trans.get("type") != "union":
+            trans["sources"] = sorted(list(sources_map.get(trans["id"], set())))
         transformations.append(trans)
 
     # Add outer query transformation if we detected it
@@ -619,7 +728,23 @@ def _extract_transformations_with_sources(lineage_node: Any) -> list[dict[str, A
         # Extract column name from any transformation (they all have the same column)
         column_for_query = next((t.get("column") for t in transformations), "")
 
-        outer_query: dict[str, Any] = {"id": "query", "type": "outer_query", "column": column_for_query, "sources": sorted(list(outer_query_sources))}
+        # Resolve outer query source references to namespaced IDs
+        resolved_sources: list[str] = []
+        for ref_name in outer_query_sources:
+            # Check if it's a known CTE or table
+            if ref_name in cte_to_id:
+                resolved_sources.append(cte_to_id[ref_name])
+            else:
+                # Not in cte_to_id, so it must be a table reference
+                # Use the same logic as in FIRST PASS to determine if it's a table
+                resolved_sources.append(f"table:{ref_name}")
+
+        outer_query: dict[str, Any] = {
+            "id": "query",
+            "type": "outer_query",
+            "column": column_for_query,
+            "sources": sorted(resolved_sources),
+        }
         # Insert at the beginning (outer query is first in the chain)
         transformations.insert(0, outer_query)
 
@@ -1084,10 +1209,6 @@ def _prepare_model_analysis(
     compiled_sql = resource_info.get("compiled_sql")
     if not compiled_sql:
         raise ValueError(f"No compiled SQL found for model '{model_name}'")
-
-    # DEBUG: Print compiled SQL to see what table names are actually there
-    logger.info(f"[DEBUG] Compiled SQL for {model_name}:")
-    logger.info(f"[DEBUG] {compiled_sql}")
 
     # Build schema mapping from upstream models
     try:
