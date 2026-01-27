@@ -267,6 +267,11 @@ class BridgeRunner:
                 self._dbt_process.kill()
                 await self._dbt_process.wait()
         finally:
+            # Close pipes to prevent resource warnings
+            if self._dbt_process:
+                if self._dbt_process.stdin:
+                    self._dbt_process.stdin.close()
+                # stdout and stderr are StreamReaders - no close() method needed
             self._dbt_process = None
 
     async def _invoke_persistent(self, args: list[str], progress_callback: Callable[[int, int, str], Any] | None = None, expected_total: int | None = None) -> DbtRunnerResult:
@@ -1093,6 +1098,11 @@ class BridgeRunner:
         if hasattr(self, "_dbt_process") and self._dbt_process and self._dbt_process.returncode is None:
             logger.warning("BridgeRunner deleted with active process, forcing cleanup")
             try:
+                # Close stdin (StreamWriter) to prevent resource warnings
+                if self._dbt_process.stdin:
+                    self._dbt_process.stdin.close()
+                # stdout and stderr are StreamReaders - no close() method needed
+                # Then kill the process
                 self._dbt_process.kill()
             except Exception as e:
                 logger.warning(f"Error killing process during cleanup: {e}")
