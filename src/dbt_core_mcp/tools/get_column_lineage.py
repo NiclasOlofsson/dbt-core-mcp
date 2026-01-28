@@ -1619,6 +1619,143 @@ def _trace_upstream_recursive(
     return results
 
 
+async def _build_downstream_usages(
+    manifest: ManifestLoader,
+    model_name: str,
+    column_name: str,
+    depth: int | None,
+    dialect: str,
+    current_depth: int = 0,
+) -> list[dict[str, Any]]:
+    """Build downstream usages with transformations (reversed order).
+
+    For each downstream model using this column, trace how they transform it
+    from input to output. Transformations are in reversed order (bottom-to-top:
+    table input → CTEs → outer query).
+
+    Args:
+        manifest: ManifestLoader instance
+        model_name: Source model name
+        column_name: Source column name
+        depth: Maximum depth to traverse
+        dialect: SQL dialect for parsing
+        current_depth: Current recursion depth
+
+    Returns:
+        List of usage dicts with transformations
+    """
+    if depth is not None and current_depth >= depth:
+        return []
+
+    try:
+        lineage_data = manifest.get_lineage(
+            model_name,
+            resource_type="model",
+            direction="downstream",
+            depth=1,
+        )
+    except (ValueError, KeyError, AttributeError) as e:
+        logger.warning(f"Could not get downstream lineage for {model_name}: {e}")
+        return []
+
+    downstream_models = lineage_data.get("downstream", [])
+    usages = []
+
+    for downstream_model in downstream_models:
+        if not downstream_model.get("unique_id", "").startswith("model."):
+            continue
+
+        # Skip CTE unit test helper models
+        model_name_downstream = downstream_model.get("name", "")
+        if model_name_downstream and len(model_name_downstream) > 8:
+            suffix = model_name_downstream[-8:]
+            if suffix[:2] == "__" and all(c in "0123456789abcdef" for c in suffix[2:]):
+                continue
+
+        try:
+            # Get downstream model's SQL and trace transformations
+            downstream_info, compiled_sql, schema_mapping = _prepare_model_analysis(
+                manifest,
+                model_name_downstream,
+            )
+
+            # Resolve output columns to find which column(s) use our source column
+            output_columns_dict, _ = _resolve_output_columns(compiled_sql, schema_mapping, downstream_info, dialect)
+
+            # Find output columns that reference our source column
+            for output_col_name in output_columns_dict:
+                try:
+                    # Trace transformations for this output column
+                    column_lineage_result = _analyze_column_lineage(
+                        column_name=output_col_name,
+                        compiled_sql=compiled_sql,
+                        schema_mapping=schema_mapping,
+                        model_name=model_name_downstream,
+                        dialect=dialect,
+                    )
+
+                    # Extract transformations (shows how downstream model builds the column)
+                    transformations = _extract_transformations_with_sources(column_lineage_result)
+
+                    # Reverse transformations for downstream (bottom-to-top: input → output)
+                    # Upstream shows top-to-bottom (query → CTEs → table)
+                    # Downstream shows bottom-to-top (table → CTEs → query)
+                    transformations = list(reversed(transformations))
+
+                    # Extract dependencies (to find if they reference our source column)
+                    deps = _extract_dependencies_from_lineage(
+                        column_lineage_result,
+                        manifest,
+                        schema_mapping,
+                        depth=1,  # Only immediate deps
+                        column_name=output_col_name,
+                    )
+
+                    # Check if any dependency references our source model+column
+                    uses_source_column = False
+                    for dep in deps:
+                        dep_table = dep.get("table", "")
+                        dep_column = dep.get("column", "")
+                        # Match table name (handle schema-qualified names)
+                        if model_name.lower() in dep_table.lower() and dep_column.lower() == column_name.lower():
+                            uses_source_column = True
+                            break
+
+                    if uses_source_column:
+                        # Already extracted transformations above
+                        # Recursively get usages of this downstream column
+                        nested_usages = await _build_downstream_usages(
+                            manifest,
+                            model_name_downstream,
+                            output_col_name,
+                            depth,
+                            dialect,
+                            current_depth + 1,
+                        )
+
+                        usage = {
+                            "model": model_name_downstream,
+                            "column": output_col_name,
+                            "distance": current_depth + 1,
+                            "transformations": transformations,
+                        }
+
+                        if nested_usages:
+                            usage["usages"] = nested_usages
+
+                        usages.append(usage)
+
+                except Exception as e:
+                    logger.debug(f"Could not trace {model_name_downstream}.{output_col_name}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.warning(f"Error analyzing downstream model {model_name_downstream}: {e}")
+            continue
+
+    return usages
+
+
 def _format_lineage_response(model_name: str, column_name: str, direction: str, dependencies: list[dict[str, Any]], downstream_usage: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Format the final lineage response.
 
@@ -1627,11 +1764,23 @@ def _format_lineage_response(model_name: str, column_name: str, direction: str, 
         column_name: Column name
         direction: Direction of lineage
         dependencies: Upstream dependencies
-        downstream_usage: Optional downstream usage info
+        downstream_usage: Optional downstream usage info (legacy format or new usages format)
 
     Returns:
         Formatted response dict
     """
+    result: dict[str, Any] = {
+        "model": model_name,
+        "column": column_name,
+        "direction": direction,
+    }
+
+    # Handle downstream-only format (new unified structure with transformations)
+    if direction == "downstream" and downstream_usage is not None:
+        # New format: usages with transformations (no root transformations, we're the source)
+        result["usages"] = downstream_usage
+        return result
+
     # Extract root transformations from dependencies (if present)
     root_transformations = None
     if dependencies and "__root_transformations__" in dependencies[0]:
@@ -1640,13 +1789,7 @@ def _format_lineage_response(model_name: str, column_name: str, direction: str, 
         for dep in dependencies:
             dep.pop("__root_transformations__", None)
 
-    result: dict[str, Any] = {
-        "model": model_name,
-        "column": column_name,
-        "direction": direction,
-    }
-
-    # Add root transformations if present
+    # Add root transformations if present (upstream or both)
     if root_transformations:
         result["transformations"] = root_transformations
         # Extract via_ctes from transformations (new format with id/type)
@@ -1665,9 +1808,9 @@ def _format_lineage_response(model_name: str, column_name: str, direction: str, 
     result["dependencies"] = dependencies
     result["dependency_count"] = len(dependencies)
 
-    if downstream_usage is not None:
-        result["downstream_usage"] = downstream_usage
-        result["downstream_count"] = len(downstream_usage)
+    if downstream_usage is not None and direction != "downstream":
+        # For "both" direction: use new usages format
+        result["usages"] = downstream_usage
 
     return result
 
@@ -1757,9 +1900,9 @@ async def implementation(
         raise ValueError(f"Column '{column_name}' not found in output of model '{model_name}'. Available columns: {available_columns}")
 
     if direction == "downstream":
-        # Downstream only
-        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth, dialect)
-        return _format_lineage_response(model_name, column_name, direction, [], downstream_usage)
+        # Downstream only - new format with transformations
+        usages = await _build_downstream_usages(state.manifest, model_name, column_name, depth, dialect)
+        return _format_lineage_response(model_name, column_name, direction, [], usages)
 
     if direction == "upstream":
         # Upstream only
@@ -1769,8 +1912,8 @@ async def implementation(
     else:  # direction == "both"
         # Both upstream and downstream
         dependencies = _trace_upstream_recursive(state.manifest, model_name, column_name, depth, dialect)
-        downstream_usage = await _trace_downstream_column(state.manifest, model_name, column_name, depth, dialect)
-        return _format_lineage_response(model_name, column_name, direction, dependencies, downstream_usage)
+        usages = await _build_downstream_usages(state.manifest, model_name, column_name, depth, dialect)
+        return _format_lineage_response(model_name, column_name, direction, dependencies, usages)
 
 
 @dbtTool()

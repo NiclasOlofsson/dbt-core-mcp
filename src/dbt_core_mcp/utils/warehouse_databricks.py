@@ -10,6 +10,9 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
+import yaml
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,13 +88,6 @@ class DatabricksWarehouseAdapter:
         except DatabricksProfileError as e:
             logger.error(f"Failed to get Databricks connection info: {e}")
             raise
-
-        # Import requests here to avoid dependency at module level
-        try:
-            import requests
-        except ImportError:
-            logger.error("requests library not available, cannot pre-warm Databricks warehouse")
-            raise RuntimeError("requests library required for Databricks pre-warming")
 
         headers = {"Authorization": f"Bearer {token}"}
         warehouse_url = f"https://{instance}/api/2.0/sql/warehouses/{warehouse_id}"
@@ -220,13 +216,6 @@ class DatabricksWarehouseAdapter:
         Raises:
             DatabricksProfileError: If profiles not found or invalid
         """
-        # Run YAML loading in thread to avoid blocking
-        return await asyncio.to_thread(self._load_profile_sync)
-
-    def _load_profile_sync(self) -> dict[str, Any]:
-        """Synchronous helper to load profile from YAML files."""
-        import yaml
-
         # First check project directory for profiles.yml
         local_profiles_path = self.project_dir / "profiles.yml"
         if local_profiles_path.exists():
@@ -246,6 +235,36 @@ class DatabricksWarehouseAdapter:
                 profiles = yaml.safe_load(f)
         except Exception as e:
             raise DatabricksProfileError(f"Failed to parse profiles.yml: {e}")
+
+        # Get profile name from dbt_project.yml
+        project_yml_path = self.project_dir / "dbt_project.yml"
+        if not project_yml_path.exists():
+            raise DatabricksProfileError(f"Could not find dbt_project.yml at {project_yml_path}")
+
+        try:
+            with open(project_yml_path) as f:
+                project = yaml.safe_load(f)
+        except Exception as e:
+            raise DatabricksProfileError(f"Failed to parse dbt_project.yml: {e}")
+
+        profile_name = project.get("profile")
+        if not profile_name:
+            raise DatabricksProfileError("No 'profile' key found in dbt_project.yml")
+
+        # Get profile
+        profile = profiles.get(profile_name)
+        if not profile:
+            raise DatabricksProfileError(f"Profile '{profile_name}' not found in profiles.yml")
+
+        # Get target
+        target_name = profile.get("target", "default")
+        target = profile.get("outputs", {}).get(target_name)
+
+        if not target:
+            raise DatabricksProfileError(f"Target '{target_name}' not found in profile '{profile_name}'")
+
+        logger.debug(f"Using profile '{profile_name}', target '{target_name}'")
+        return target
 
         # Get profile name from dbt_project.yml
         project_yml_path = self.project_dir / "dbt_project.yml"

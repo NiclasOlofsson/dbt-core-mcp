@@ -8,6 +8,8 @@ in the same project directory, helping prevent concurrent execution issues.
 import logging
 from pathlib import Path
 
+import psutil
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,13 +24,6 @@ def is_dbt_running(project_dir: Path, exclude_pid: int | None = None) -> bool:
     Returns:
         True if a dbt process is detected running in the project directory
     """
-    try:
-        import psutil
-    except ImportError:
-        # If psutil is not available, we can't check - return False (assume safe)
-        logger.warning("psutil not installed - cannot check for running dbt processes")
-        return False
-
     project_dir = project_dir.resolve()  # Normalize path
     logger.debug(f"Checking for dbt processes in: {project_dir}")
 

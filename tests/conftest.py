@@ -4,6 +4,7 @@ Pytest configuration and fixtures for dbt Core MCP tests.
 
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncGenerator
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
@@ -100,3 +101,30 @@ async def jaffle_shop_server() -> AsyncGenerator["DbtCoreMcpServer", None]:
     # Cleanup: Stop persistent process if it was started
     if server.runner and server.runner._dbt_process:  # type: ignore[reportPrivateUsage]
         await server.runner._stop_persistent_process()  # type: ignore[reportPrivateUsage]
+
+
+@pytest_asyncio.fixture
+async def fixture_manifest() -> Mock:
+    """Create a mock state with ManifestLoader from test fixtures.
+
+    Uses the pre-compiled manifest.json from tests/fixtures/target/ which contains
+    the jaffle_shop example project. Much faster than jaffle_shop_server since it
+    skips project initialization, parsing, and compilation.
+
+    Returns:
+        Mock state object with real ManifestLoader instance
+    """
+    from dbt_core_mcp.context import DbtCoreServerContext
+    from dbt_core_mcp.dbt.manifest import ManifestLoader
+
+    # Load manifest from fixtures
+    manifest_path = Path(__file__).parent / "fixtures" / "target" / "manifest.json"
+    manifest_loader = ManifestLoader(manifest_path)
+    await manifest_loader.load()
+
+    # Create mock state with real manifest
+    state = Mock(spec=DbtCoreServerContext)
+    state.ensure_initialized = AsyncMock()
+    state.manifest = manifest_loader
+
+    return state
