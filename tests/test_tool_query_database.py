@@ -518,3 +518,59 @@ select * from customer_agg
     assert "customer_agg as (" in sql.lower()
     assert "from orders" in sql.lower()
     assert "{{ ref('stg_orders') }}" in sql
+
+
+@pytest.mark.asyncio
+async def test_query_database_relative_path_normalization(mock_state: Mock, tmp_path: Path) -> None:
+    """Test that relative output_file paths are normalized to workspace root."""
+    # Set up mock state with a project directory
+    mock_state.project_dir = tmp_path
+
+    # Mock the query execution to return test data in dbt show format
+    mock_result = Mock()
+    mock_result.success = True
+    mock_result.elapsed_time = 1.23
+    mock_result.stdout = json.dumps({"show": [{"test_col": 1}, {"test_col": 2}]})
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke_query.return_value = mock_result
+
+    # Use a relative path
+    relative_path = "temp_auto/test_output.json"
+
+    result = await query_database_impl(None, "SELECT 1 as test_col", relative_path, "json", None, None, mock_state)
+
+    assert result["status"] == "success"
+    # Check that the file was saved with an absolute path relative to workspace root
+    saved_path = Path(result["saved_to"])
+    assert saved_path.is_absolute()
+    assert saved_path.parent.parent == tmp_path  # temp_auto/test_output.json -> parent.parent should be workspace root
+    assert saved_path.name == "test_output.json"
+    assert saved_path.parent.name == "temp_auto"
+
+
+@pytest.mark.asyncio
+async def test_query_database_absolute_path_unchanged(mock_state: Mock, tmp_path: Path) -> None:
+    """Test that absolute output_file paths are used as-is."""
+    # Set up mock state with a project directory
+    mock_state.project_dir = tmp_path / "workspace"
+
+    # Mock the query execution to return test data in dbt show format
+    mock_result = Mock()
+    mock_result.success = True
+    mock_result.elapsed_time = 1.23
+    mock_result.stdout = json.dumps({"show": [{"test_col": 1}, {"test_col": 2}]})
+
+    mock_runner = await mock_state.get_runner()
+    mock_runner.invoke_query.return_value = mock_result
+
+    # Use an absolute path
+    absolute_path = tmp_path / "other_location" / "test_output.json"
+
+    result = await query_database_impl(None, "SELECT 1 as test_col", str(absolute_path), "json", None, None, mock_state)
+
+    assert result["status"] == "success"
+    # Check that the file was saved at the exact absolute path provided
+    saved_path = Path(result["saved_to"])
+    assert saved_path == absolute_path
+    assert saved_path.is_absolute()

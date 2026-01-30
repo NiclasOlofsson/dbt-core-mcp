@@ -169,6 +169,17 @@ async def _implementation(
     # Ensure dbt components are initialized
     await state.ensure_initialized(ctx, force_parse=False)
 
+    # Normalize output_file path to be relative to workspace root if relative
+    if output_file:
+        output_path_obj = Path(output_file)
+        if not output_path_obj.is_absolute():
+            # Relative path - make it relative to workspace root
+            if state.project_dir:
+                output_file = str(state.project_dir / output_path_obj)
+                logger.debug(f"Normalized relative output path to: {output_file}")
+            else:
+                logger.warning("Project directory not available, using output_file path as-is")
+
     async def progress_callback(current: int, total: int, message: str) -> None:
         if ctx:
             await ctx.report_progress(progress=current, total=total, message=message)
@@ -374,6 +385,7 @@ async def query_database(
     - For large result sets (>100 rows), use output_file to save results
     - If output_file is omitted, all data returns inline (may consume large context)
     - output_file is automatically created with parent directories
+    - Relative paths are resolved relative to the workspace root
 
     **Output Formats**:
     - json (default): Returns data as JSON array of objects
@@ -387,6 +399,7 @@ async def query_database(
                When using cte_name/model_name, provide a full `SELECT`/`WITH` query that
                selects from `__cte__` (or `{{ cte }}`), which is replaced with the CTE name.
         output_file: Optional file path to save results. Recommended for large result sets (>100 rows).
+                    Relative paths are resolved relative to the workspace root.
                     If provided, only metadata is returned (no preview for CSV/TSV).
                     If omitted, all data is returned inline (may consume large context).
         output_format: Output format - "json" (default), "csv", or "tsv"
