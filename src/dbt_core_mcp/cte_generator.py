@@ -570,7 +570,8 @@ def generate_cte_tests(project_dir: Path) -> int:
 def cleanup_cte_tests(project_dir: Path) -> None:
     """Clean up all __cte_tests directories.
 
-    Recursively searches model paths for __cte_tests directories and removes them.
+    Recursively searches model paths, test paths, and target directory for
+    __cte_tests directories and removes them.
 
     Args:
         project_dir: Path to dbt project root
@@ -580,14 +581,33 @@ def cleanup_cte_tests(project_dir: Path) -> None:
     # Load project configuration
     config = _load_project_config(project_dir)
     model_paths = config.get("model-paths", ["models"])
+    test_paths = config.get("test-paths", ["tests"])
+
+    # Directories to search for __cte_tests
+    search_paths = []
+
+    # Add model paths
+    for model_path in model_paths:
+        search_dir = project_dir / model_path
+        if search_dir.exists():
+            search_paths.append(search_dir)
+
+    # Add test paths (including common unit_tests convention)
+    for test_path in test_paths:
+        search_dir = project_dir / test_path
+        if search_dir.exists():
+            search_paths.append(search_dir)
+    if (project_dir / "unit_tests").exists():
+        search_paths.append(project_dir / "unit_tests")
+
+    # Add target directory (compiled and run artifacts)
+    target_dir = project_dir / "target"
+    if target_dir.exists():
+        search_paths.append(target_dir)
 
     # Find and remove all __cte_tests directories
     removed_count = 0
-    for model_path in model_paths:
-        search_dir = project_dir / model_path
-        if not search_dir.exists():
-            continue
-
+    for search_dir in search_paths:
         # Find all __cte_tests directories recursively
         for cte_tests_dir in search_dir.rglob("__cte_tests"):
             if cte_tests_dir.is_dir():

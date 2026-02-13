@@ -664,9 +664,9 @@ class BridgeRunner:
 
         # Pattern to match dbt progress lines with timestamp prefix: "12:04:38  1 of 5 START/OK/PASS/ERROR ..."
         # Models use: START, OK, ERROR, FAIL, SKIP, WARN
-        # Tests use: START, PASS, FAIL, ERROR, SKIP, WARN
+        # Tests use: START, PASS, FAIL, ERROR, SKIP, WARN (with optional failure count: "FAIL 1")
         # Seeds use: START, INSERT, ERROR, SKIP
-        progress_pattern = re.compile(r"^\d{2}:\d{2}:\d{2}\s+(\d+) of (\d+) (START|OK|PASS|INSERT|ERROR|FAIL|SKIP|WARN)\s+(.+)$")
+        progress_pattern = re.compile(r"^\d{2}:\d{2}:\d{2}\s+(\d+) of (\d+) (START|OK|PASS|INSERT|ERROR|FAIL|SKIP|WARN)(?:\s+\d+)?\s+(.+)$")
 
         stdout_lines = []
         stderr_lines = []
