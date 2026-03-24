@@ -170,9 +170,6 @@ temp_summary/
 # Hatch
 .hatch/
 
-# UV
-uv.lock
-
 # DBT artifacts
 examples/jaffle_shop/logs/
 examples/jaffle_shop/target/
