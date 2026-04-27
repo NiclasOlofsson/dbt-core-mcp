@@ -60,7 +60,7 @@ packages = ["src/dbt_core_mcp"]
 dev = [
     "pytest==9.0.2",
     "pytest-asyncio==1.3.0",
-    "pyright==1.1.408",
+    "pyright==1.1.409",
     "ruff==0.14.14",
     "bump-my-version>=0.11.0",
 ]
